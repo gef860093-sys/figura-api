@@ -143,7 +143,6 @@ if (REDIS_URL) {
 
 function broadcast(bufferData) {
     if (pub) {
-        // แปลง Buffer เป็น Base64 ก่อนยิงขึ้น Redis
         pub.publish("ws-broadcast", bufferData.toString("base64"));
     }
 }
