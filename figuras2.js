@@ -30,7 +30,8 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const PORT = process.env.PORT || 8080; 
-const LIMIT_BYTES = 35 * 1024 * 1024; // 35MB
+// 🚀 ขยายลิมิตเป็น 35MB ตามที่คุณต้องการ เพื่อไม่ให้เกมตัดการเชื่อมต่อ
+const LIMIT_BYTES = 35 * 1024 * 1024; 
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD; 
 
 // 🗄️ MySQL Database setup
@@ -46,7 +47,11 @@ const dbPool = mysql.createPool({
     keepAliveInitialDelay: 0
 });
 
-if (!fs.existsSync("avatars")) fs.mkdirSync("avatars");
+// 📁 ตรวจสอบและสร้างโฟลเดอร์ avatars เสมอ
+const avatarsDir = path.join(__dirname, 'avatars');
+if (!fs.existsSync(avatarsDir)) {
+    fs.mkdirSync(avatarsDir, { recursive: true });
+}
 
 const app = express();
 app.set('trust proxy', 1);
@@ -109,23 +114,11 @@ if (REDIS_URL) {
         console.error(`${c.r}${logTime()} ❌ Redis Error: ${err.message}${c.rst}`);
     });
 
-    // 🧪 ทดสอบง่ายสุด (เพิ่มชั่วคราวเช็คชัวร์)
-    (async () => {
-        try {
-            await pub.set("test_connection", "ok", "EX", 60);
-            const val = await pub.get("test_connection");
-            console.log(`${c.g}${logTime()} 🧪 Redis Test SUCCESS: ${val}${c.rst}`);
-        } catch (e) {
-            console.error(`${c.r}${logTime()} ❌ Redis Test FAIL: ${e.message}${c.rst}`);
-        }
-    })();
-
     sub.subscribe("ws-broadcast");
     
     sub.on("message", (channel, msg) => {
         if (channel === "ws-broadcast") {
             try {
-                // แปลง Base64 กลับเป็น Buffer
                 const messageBuffer = Buffer.from(msg, "base64");
                 if (messageBuffer.length >= 17) {
                     const uuidHex = messageBuffer.slice(1, 17).toString('hex');
@@ -177,7 +170,7 @@ async function syncBlacklistAndKick() {
                 tokenMap.delete(ws);
                 hashCache.delete(userInfo.uuid);
                 
-                const avatarFile = path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`);
+                const avatarFile = path.join(avatarsDir, `${userInfo.uuid}.moon`);
                 fsp.unlink(avatarFile).catch(() => {}); 
                 
                 if (wsMap.has(userInfo.uuid)) wsMap.delete(userInfo.uuid);
@@ -255,8 +248,8 @@ app.put('/api/avatar', (req, res) => {
     let contentLength = parseInt(req.headers['content-length'] || '0');
     if (contentLength > LIMIT_BYTES) return res.status(413).end();
 
-    const tempFile = path.join(__dirname, 'avatars', `${userInfo.uuid}.moon.tmp`);
-    const finalFile = path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`);
+    const tempFile = path.join(avatarsDir, `${userInfo.uuid}.moon.tmp`);
+    const finalFile = path.join(avatarsDir, `${userInfo.uuid}.moon`);
     const writeStream = fs.createWriteStream(tempFile);
     const hash = crypto.createHash('sha256');
 
@@ -288,7 +281,7 @@ app.delete('/api/avatar', async (req, res) => {
     if (!userInfo) return res.status(401).end();
     userInfo.lastActive = Date.now();
     
-    const filePath = path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`);
+    const filePath = path.join(avatarsDir, `${userInfo.uuid}.moon`);
     try {
         await fsp.unlink(filePath); 
         hashCache.delete(userInfo.uuid);
@@ -307,7 +300,7 @@ app.delete('/api/avatar', async (req, res) => {
 app.get('/api/:uuid/avatar', async (req, res) => { 
     const uuidStr = req.params.uuid;
     if (["motd", "version", "auth", "limits", "stats-secret"].includes(uuidStr)) return res.status(404).end();
-    const avatarFile = path.join(__dirname, 'avatars', `${formatUuid(uuidStr)}.moon`);
+    const avatarFile = path.join(avatarsDir, `${formatUuid(uuidStr)}.moon`);
     try {
         await fsp.access(avatarFile); 
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
@@ -325,7 +318,7 @@ app.get('/api/:uuid', async (req, res) => {
 
     const data = { uuid: uuid, rank: "normal", equipped: [], lastUsed: new Date().toISOString(), version: "0.1.5", banned: false };
     let fileHash = hashCache.get(uuid);
-    const avatarFile = path.join(__dirname, 'avatars', `${uuid}.moon`);
+    const avatarFile = path.join(avatarsDir, `${uuid}.moon`);
     
     if (!fileHash) {
         try {
@@ -350,86 +343,6 @@ app.get('/health', (req, res) => {
 
 app.get('/ping', (req, res) => res.send('ok'));
 app.use(express.json());
-
-// ==========================================
-// 📊 ADMIN DASHBOARD
-// ==========================================
-app.get('/admin', (req, res) => {
-    if (req.query.pw !== ADMIN_PASSWORD) return res.status(403).send("<h1 style='color:red;text-align:center;margin-top:50px;'>⛔ 403 FORBIDDEN - ACCESS DENIED</h1>");
-    res.status(200).send(`
-        <!DOCTYPE html>
-        <html lang="en">
-        <head>
-            <meta charset="UTF-8">
-            <title>BIGAVTAR Command Center</title>
-            <style>
-                body { background: #0a0a0c; color: #0ff; font-family: 'Segoe UI', monospace; display: flex; flex-direction: column; align-items: center; padding: 40px; margin: 0; }
-                .container { width: 100%; max-width: 1000px; background: rgba(0, 255, 255, 0.03); padding: 30px; border-radius: 15px; border: 1px solid rgba(0, 255, 255, 0.3); box-shadow: 0 0 30px rgba(0, 255, 255, 0.1); }
-                h1 { text-shadow: 0 0 15px #0ff; text-align: center; margin-top: 0; }
-                .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 15px; margin-bottom: 30px; }
-                .card { background: #111; padding: 20px; border-radius: 10px; text-align: center; border: 1px solid #333; }
-                .card span { display: block; font-size: 2em; font-weight: bold; color: #fff; text-shadow: 0 0 10px #fff; }
-                .card small { color: #0ff; text-transform: uppercase; font-size: 0.8em; letter-spacing: 1px; }
-                table { width: 100%; border-collapse: collapse; background: #0d0d12; border-radius: 8px; overflow: hidden; }
-                th, td { padding: 15px; text-align: left; border-bottom: 1px solid #222; color: #ccc; }
-                th { background: rgba(0, 255, 255, 0.1); color: #0ff; }
-                .ip { color: #ffeb3b; letter-spacing: 1px; }
-                .proj { color: #03a9f4; }
-            </style>
-        </head>
-        <body>
-            <div class="container">
-                <h1>⚡ BIGAVTAR COMMAND CENTER</h1>
-                <div class="grid">
-                    <div class="card"><span id="s-online">0</span><small>Players Online</small></div>
-                    <div class="card"><span id="s-avatars">0</span><small>Saved Avatars</small></div>
-                    <div class="card"><span id="s-ram">0</span><small>RAM (MB)</small></div>
-                    <div class="card"><span id="s-uptime">0h 0m</span><small>Uptime</small></div>
-                </div>
-                <table>
-                    <thead>
-                        <tr><th>Username</th><th>IP Address</th><th>Project / Version</th></tr>
-                    </thead>
-                    <tbody id="pTable">
-                        <tr><td colspan="3" style="text-align:center;">Loading...</td></tr>
-                    </tbody>
-                </table>
-            </div>
-            <script>
-                async function update() {
-                    try {
-                        const res = await fetch('/api/stats-secret?pw=${ADMIN_PASSWORD}');
-                        const d = await res.json();
-                        document.getElementById('s-online').innerText = d.stats.online;
-                        document.getElementById('s-avatars').innerText = d.stats.avatars;
-                        document.getElementById('s-ram').innerText = d.stats.ram;
-                        document.getElementById('s-uptime').innerText = d.stats.uptime;
-                        const tb = document.getElementById('pTable');
-                        if (d.players.length === 0) {
-                            tb.innerHTML = '<tr><td colspan="3" style="text-align:center;">No players online</td></tr>';
-                        } else {
-                            tb.innerHTML = d.players.map(p => '<tr><td><b style="color:#fff">' + p.name + '</b></td><td class="ip">' + p.ip + '</td><td class="proj">' + p.project + '</td></tr>').join('');
-                        }
-                    } catch(e) {}
-                } 
-                update(); 
-                setInterval(update, 3000);
-            </script>
-        </body>
-        </html>
-    `);
-});
-
-app.get('/api/stats-secret', (req, res) => {
-    if (req.query.pw !== ADMIN_PASSWORD) return res.status(403).json({ error: "Access Denied" });
-    fs.readdir('avatars', (err, files) => {
-        const uptime = process.uptime();
-        res.json({ 
-            players: Array.from(tokens.values()).map(p => ({ name: p.username, ip: p.clientIp, project: p.projectInfo })),
-            stats: { online: tokenMap.size, avatars: err ? 0 : files.filter(f => f.endsWith('.moon')).length, ram: Math.round(process.memoryUsage().heapUsed / 1024 / 1024), uptime: `${Math.floor(uptime/3600)}h ${Math.floor((uptime%3600)/60)}m` }
-        });
-    });
-});
 
 app.get('/', (req, res) => res.status(200).send("§b§lBIGAVTAR CLOUD §f§l- §a§lONLINE"));
 
@@ -461,7 +374,7 @@ wss.on('connection', (ws) => {
         try {
             ws.packetCount++;
             if (ws.packetCount > 5000) return; 
-            if (data.length > 1000000) return; 
+            if (data.length > LIMIT_BYTES) return; 
 
             const now = Date.now();
             if (now - ws.lastSend < 50) return; 
