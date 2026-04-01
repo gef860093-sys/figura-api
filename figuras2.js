@@ -30,7 +30,7 @@ process.on('unhandledRejection', (reason) => {
 });
 
 const PORT = process.env.PORT || 8080; 
-const LIMIT_BYTES = 25 * 1024 * 1024; // 25MB
+const LIMIT_BYTES = 35 * 1024 * 1024; // 35MB
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD; 
 
 // 🗄️ MySQL Database setup
