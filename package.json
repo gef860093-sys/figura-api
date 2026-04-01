@@ -1,7 +1,7 @@
 {
   "name": "bigavatarcloud",
   "version": "1.0.0",
-  "description": "BIGAVTAR CLOUD - ENTERPRISE EDITION",
+  "description": "FIGURA CLOUD - ENTERPRISE EDITION",
   "main": "figuras2.js",
   "scripts": {
     "start": "node --expose-gc figuras2.js"
@@ -13,7 +13,6 @@
     "dotenv": "^17.3.1",
     "express": "^4.22.1",
     "express-rate-limit": "^7.5.1",
-    "helmet": "^8.1.0",
     "ioredis": "^5.4.1",
     "mysql2": "^3.19.1",
     "ws": "^8.19.0"
