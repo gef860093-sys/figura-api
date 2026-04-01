@@ -1,3 +1,4 @@
+require('dotenv').config();
 const express = require('express');
 const http = require('http'); 
 const https = require('https');
@@ -11,29 +12,33 @@ const crypto = require('crypto');
 const mysql = require('mysql2/promise');
 const rateLimit = require('express-rate-limit'); 
 const compression = require('compression'); 
-const Redis = require('ioredis'); // ✅ เพิ่ม: ioredis สำหรับ Scale-out
+const Redis = require('ioredis');
 
-// 🎨 Console colors
+// 🎨 Console colors & Env Config
 const c = { g: '\x1b[32m', b: '\x1b[36m', y: '\x1b[33m', r: '\x1b[31m', p: '\x1b[35m', rst: '\x1b[0m' };
 const logTime = () => `[${new Date().toLocaleTimeString('th-TH')}]`;
+const isProd = process.env.NODE_ENV === 'production';
 
+// 🛑 1. Stability: ป้องกันเซิร์ฟเวอร์ดับ (Uncaught/Unhandled)
 process.on('uncaughtException', (err) => { 
+    fs.appendFileSync("error.log", `${logTime()} [Uncaught Exception] ${err.stack}\n`);
     console.error(`${c.r}${logTime()} ⚠️ [CRASH PREVENTED] Error: ${err.message}${c.rst}`); 
 });
 process.on('unhandledRejection', (reason) => { 
+    fs.appendFileSync("error.log", `${logTime()} [Unhandled Rejection] ${reason}\n`);
     console.error(`${c.r}${logTime()} ⚠️ [CRASH PREVENTED] Rejection: ${reason}${c.rst}`); 
 });
 
 const PORT = process.env.PORT || 8080; 
 const LIMIT_BYTES = 25 * 1024 * 1024; // 25MB
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "default_admin_password"; 
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD; 
 
 // 🗄️ MySQL Database setup
 const dbPool = mysql.createPool({
-    host: 'poland.nami-ch.com', 
-    user: 'figura_blacklist1', 
-    password: process.env.DB_PASSWORD || 'kOj_W1gm*6qbjqz2', 
-    database: 'spongfan_figura_blacklist', 
+    host: process.env.DB_HOST, 
+    user: process.env.DB_USER, 
+    password: process.env.DB_PASS, 
+    database: process.env.DB_NAME, 
     waitForConnections: true,
     connectionLimit: process.env.DB_LIMIT ? parseInt(process.env.DB_LIMIT) : 50, 
     queueLimit: 0,
@@ -60,7 +65,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// 🧠 RAM Optimization 
 const server_ids = new Map();
 const tokens = new Map();
 const tokenMap = new Map(); 
@@ -79,9 +83,17 @@ function formatUuid(uuid) {
     return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
 }
 
-// ==========================================
-// 🚀 REDIS CLUSTER SETUP (PUB/SUB)
-// ==========================================
+// ⚡ 3. Performance: FastSend ลดภาระ Loop
+function fastSend(connections, data, excludeWs = null) {
+    if (!connections) return;
+    for (const ws of connections) {
+        if (ws.readyState === WebSocket.OPEN && ws !== excludeWs) {
+            ws.send(data, { binary: true }, () => {}); 
+        }
+    }
+}
+
+// 🚀 4. Scale: Redis Integration (Base64 Broadcast)
 let pub, sub;
 const REDIS_URL = process.env.REDIS_URL;
 
@@ -89,50 +101,56 @@ if (REDIS_URL) {
     pub = new Redis(REDIS_URL);
     sub = new Redis(REDIS_URL);
 
+    pub.on("connect", () => {
+        if (!isProd) console.log(`${c.g}${logTime()} ✅ Redis Publisher Connected${c.rst}`);
+    });
+    pub.on("error", (err) => console.error(`${c.r}${logTime()} ❌ Redis Error: ${err.message}${c.rst}`));
+
     sub.subscribe("ws-broadcast");
     
-    // ✅ ใช้ messageBuffer แทน message ปกติ เพื่อรองรับข้อมูล Binary จากเกม
-    sub.on("messageBuffer", (channelBuffer, messageBuffer) => {
-        if (channelBuffer.toString() === "ws-broadcast") {
-            if (messageBuffer.length >= 17) {
-                // แกะ UUID Hex จาก Buffer ของโปรโตคอล (ตำแหน่งที่ 1 ถึง 17)
-                const uuidHex = messageBuffer.slice(1, 17).toString('hex');
-                const uuid = formatUuid(uuidHex);
-                
-                // ค้นหาว่าใน Server Instance นี้มีใครเชื่อมต่ออยู่กับ UUID นี้ไหม
-                const connections = wsMap.get(uuid);
-                if (connections) {
-                    connections.forEach(ws => {
-                        if (ws.readyState === WebSocket.OPEN) {
-                            ws.send(messageBuffer); 
-                        }
-                    });
+    sub.on("message", (channel, msg) => {
+        if (channel === "ws-broadcast") {
+            try {
+                // แปลง Base64 กลับเป็น Buffer
+                const messageBuffer = Buffer.from(msg, "base64");
+                if (messageBuffer.length >= 17) {
+                    const uuidHex = messageBuffer.slice(1, 17).toString('hex');
+                    const uuid = formatUuid(uuidHex);
+                    fastSend(wsMap.get(uuid), messageBuffer); 
                 }
+            } catch (e) {
+                if (!isProd) console.error("Redis Decode Error", e);
             }
         }
     });
-    console.log(`${c.g}${logTime()} 🔗 [REDIS] Connected & Synced for Multi-Server Scale!${c.rst}`);
 } else {
-    console.log(`${c.y}${logTime()} ⚠️ [REDIS] No REDIS_URL found. Running in Single-Server Mode.${c.rst}`);
+    console.log(`${c.y}${logTime()} ⚠️ Running in Single-Server Mode (No Redis)${c.rst}`);
 }
 
-// 🧹 Advanced Auto-GC & RAM Leak Cleanup
+function broadcast(bufferData) {
+    if (pub) {
+        // แปลง Buffer เป็น Base64 ก่อนยิงขึ้น Redis
+        pub.publish("ws-broadcast", bufferData.toString("base64"));
+    }
+}
+
+// 🧹 Auto-GC & RAM Leak Cleanup
 setInterval(() => { 
     if (global.gc) global.gc(); 
     const now = Date.now();
     for (let [id, data] of server_ids.entries()) {
         if (now - data.time > 60000) server_ids.delete(id); 
     }
-    for (const [token, data] of tokens.entries()) {
-        if (now - (data.lastActive || now) > 10 * 60 * 1000) {
-            tokens.delete(token);
-        }
-    }
 }, 5 * 60 * 1000); 
 
-// ==========================================
-// ⚡ ระบบ ACTIVE KICK 
-// ==========================================
+setInterval(() => {
+    const now = Date.now();
+    for (const [token, data] of tokens.entries()) {
+        if (now - (data.lastActive || now) > 60 * 60 * 1000) tokens.delete(token);
+    }
+}, 60 * 60 * 1000);
+
+// ⚡ Active Kick (Sync Database ทุก 30 วิ)
 async function syncBlacklistAndKick() {
     try {
         const [rows] = await dbPool.query('SELECT username FROM figura_blacklist');
@@ -150,30 +168,18 @@ async function syncBlacklistAndKick() {
                 fsp.unlink(avatarFile).catch(() => {}); 
                 
                 if (wsMap.has(userInfo.uuid)) wsMap.delete(userInfo.uuid);
-                console.log(`${c.r}${logTime()} ⛔ [ACTIVE BAN] Kicked: ${userInfo.username}${c.rst}`);
             }
         }
     } catch (e) {} 
 }
-setInterval(syncBlacklistAndKick, 10000);
+setInterval(syncBlacklistAndKick, 30000); 
 syncBlacklistAndKick();
 
 // ==========================================
 // 🌐 REST API
 // ==========================================
-
-app.get('/api/motd', (req, res) => {
-    res.status(200).send("§b§l💎 BIGAVTAR §a§lONLINE §e§l(BY chick_chiix)\n§f§lULTIMATE - เร็ว แรง ทะลุนรก! §f§lคำเตือน : §a§lห้ามเอาไปใช้โปรเจกต์อื่นโดยเด็ดขาด หากผบเห็นโดนค่าปรับ X2");
-});
-
+app.get('/api/motd', (req, res) => res.status(200).send("§b§l💎 BIGAVTAR §a§lONLINE"));
 app.get('/api/version', (req, res) => res.json({"release":"0.1.5", "prerelease":"0.1.5"}));
-
-app.get('/api/limits', (req, res) => {
-    res.json({
-        "rate": { "pingSize": 1048576, "pingRate": 4096, "equip": 0, "download": 999999999999, "upload": 99999999999 },
-        "limits": { "maxAvatarSize": LIMIT_BYTES, "maxAvatars": 100, "allowedBadges": { "special": Array(15).fill(0), "pride": Array(30).fill(0) } }
-    });
-});
 
 app.get('/api/auth/id', (req, res) => {
     if (sqlBlacklist.has(req.query.username.toLowerCase())) return res.status(403).send("BANNED");
@@ -188,24 +194,20 @@ app.get('/api/auth/verify', async (req, res) => {
         const sessionData = server_ids.get(sid);
         if (!sessionData || sqlBlacklist.has(sessionData.username.toLowerCase())) return res.status(404).json({ error: 'Auth failed' });
         
-        const response = await fastAxios.get("https://sessionserver.mojang.com/session/minecraft/hasJoined", {
-            params: { username: sessionData.username, serverId: sid }
-        });
-        
+        const response = await fastAxios.get("https://sessionserver.mojang.com/session/minecraft/hasJoined", { params: { username: sessionData.username, serverId: sid } });
         server_ids.delete(sid); 
+        
         const token = crypto.randomBytes(16).toString('hex');
         const hexUuid = response.data.id;
         
         tokens.set(token, { 
-            uuid: formatUuid(hexUuid), 
-            hexUuid: hexUuid, 
-            username: response.data.name,
+            uuid: formatUuid(hexUuid), hexUuid: hexUuid, username: response.data.name,
             clientIp: req.headers['x-forwarded-for'] || req.socket.remoteAddress,
-            projectInfo: req.headers['user-agent'] || 'Unknown Tool',
-            lastActive: Date.now() 
+            projectInfo: req.headers['user-agent'] || 'Unknown Tool', lastActive: Date.now() 
         });
         
-        console.log(`${c.b}${logTime()} ⚡ [LOGIN] ${c.y}${response.data.name}${c.rst}`);
+        // ลด Log ในโหมด Production
+        if (!isProd) console.log(`${c.b}${logTime()} ⚡ [LOGIN] ${c.y}${response.data.name}${c.rst}`);
         res.send(token);
     } catch (error) { res.status(500).json({ error: 'Internal Error' }); }
 });
@@ -220,11 +222,8 @@ app.post('/api/equip', (req, res) => {
         buffer.writeUInt8(2, 0); 
         Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
         
-        if (pub) {
-            pub.publishBuffer("ws-broadcast", buffer); // ⚡ โยนลง Redis ให้ทุก Server จัดการ
-        } else {
-            wsMap.get(userInfo.uuid).forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(buffer); });
-        }
+        if (pub) broadcast(buffer);
+        else fastSend(wsMap.get(userInfo.uuid), buffer);
     }
     res.send("success");
 });
@@ -257,47 +256,18 @@ app.put('/api/avatar', (req, res) => {
                 buffer.writeUInt8(2, 0); 
                 Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
                 
-                if (pub) {
-                    pub.publishBuffer("ws-broadcast", buffer); // ⚡ โยนลง Redis
-                } else {
-                    wsMap.get(userInfo.uuid).forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(buffer); });
-                }
+                if (pub) broadcast(buffer);
+                else fastSend(wsMap.get(userInfo.uuid), buffer);
             }
             res.send("success"); 
         } catch (err) { res.status(500).send({ error: "File error" }); }
     });
 });
 
-app.delete('/api/avatar', async (req, res) => {
-    const userInfo = tokens.get(req.headers['token']);
-    if (!userInfo) return res.status(401).end();
-    userInfo.lastActive = Date.now();
-    
-    const filePath = path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`);
-    try {
-        await fsp.unlink(filePath); 
-        hashCache.delete(userInfo.uuid);
-        if (wsMap.has(userInfo.uuid)) {
-            const buffer = Buffer.allocUnsafe(17); 
-            buffer.writeUInt8(2, 0); 
-            Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
-            
-            if (pub) {
-                pub.publishBuffer("ws-broadcast", buffer); // ⚡ โยนลง Redis
-            } else {
-                wsMap.get(userInfo.uuid).forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(buffer); });
-            }
-        }
-        res.send("success");
-    } catch (err) { res.status(404).end(); }
-});
-
 app.get('/api/:uuid/avatar', async (req, res) => { 
     const uuidStr = req.params.uuid;
     if (["motd", "version", "auth", "limits", "stats-secret"].includes(uuidStr)) return res.status(404).end();
-
-    const uuidFmt = formatUuid(uuidStr);
-    const avatarFile = path.join(__dirname, 'avatars', `${uuidFmt}.moon`);
+    const avatarFile = path.join(__dirname, 'avatars', `${formatUuid(uuidStr)}.moon`);
     try {
         await fsp.access(avatarFile); 
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
@@ -313,61 +283,40 @@ app.get('/api/:uuid', async (req, res) => {
     const uuid = formatUuid(uuidStr);
     if (!uuid) return res.status(404).end();
 
-    const data = {
-        uuid: uuid, rank: "normal", equipped: [], lastUsed: new Date().toISOString(),
-        equippedBadges: { special: Array(15).fill(0), pride: Array(30).fill(0) },
-        version: "0.1.5", banned: false
-    };
-
+    const data = { uuid: uuid, rank: "normal", equipped: [], lastUsed: new Date().toISOString(), version: "0.1.5", banned: false };
     let fileHash = hashCache.get(uuid);
     const avatarFile = path.join(__dirname, 'avatars', `${uuid}.moon`);
     
     if (!fileHash) {
         try {
             await fsp.access(avatarFile);
-            const hash = crypto.createHash('sha256');
             const fileBuffer = await fsp.readFile(avatarFile);
-            fileHash = hash.update(fileBuffer).digest('hex');
+            fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
             hashCache.set(uuid, fileHash);
         } catch (e) {}
     }
-    
     if (fileHash) data.equipped.push({ id: 'avatar', owner: uuid, hash: fileHash });
     res.json(data);
 });
 
-app.use(express.json());
-
-// ==========================================
-// 📊 ADMIN DASHBOARD
-// ==========================================
-app.get('/admin', (req, res) => {
-    if (req.query.pw !== ADMIN_PASSWORD) return res.status(403).send("<h1 style='color:red;text-align:center;margin-top:50px;'>⛔ 403 FORBIDDEN - ACCESS DENIED</h1>");
-    // (UI โค้ดเดิม ละไว้เพื่อความกระชับ)
-    res.status(200).send(`...HTML Dashboard...`);
-});
-
-app.get('/api/stats-secret', (req, res) => {
-    if (req.query.pw !== ADMIN_PASSWORD) return res.status(403).json({ error: "Access Denied" });
-    fs.readdir('avatars', (err, files) => {
-        const uptime = process.uptime();
-        res.json({ 
-            players: Array.from(tokens.values()).map(p => ({ name: p.username, ip: p.clientIp, project: p.projectInfo })),
-            stats: { online: tokenMap.size, avatars: err ? 0 : files.filter(f => f.endsWith('.moon')).length, ram: Math.round(process.memoryUsage().heapUsed / 1024 / 1024), uptime: `${Math.floor(uptime/3600)}h ${Math.floor((uptime%3600)/60)}m` }
-        });
+// 🧠 2. Stability: Health Check แบบ Production เต็มระบบ
+app.get('/health', (req, res) => {
+    res.json({
+        status: "ok",
+        uptime: process.uptime(),
+        memory_heapUsed_MB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
     });
 });
 
-app.get('/', (req, res) => res.status(200).send("§b§lBIGAVTAR CLOUD §f§l- §a§lONLINE"));
 app.get('/ping', (req, res) => res.send('ok'));
-app.get('/health', (req, res) => res.status(200).json({ status: "ok", uptime: process.uptime() }));
+app.use(express.json());
 
 // ==========================================
-// ⚡ WEBSOCKET (PRO PERFORMANCE + REDIS)
+// ⚡ WEBSOCKET (LOW LATENCY + ANTI-SPAM)
 // ==========================================
 const server = http.createServer(app);
-server.keepAliveTimeout = 120000; 
-server.headersTimeout = 125000;
+server.keepAliveTimeout = 60000;  
+server.headersTimeout = 65000;
 
 const wss = new WebSocket.Server({ server, perMessageDeflate: false });
 
@@ -383,17 +332,13 @@ setInterval(() => {
 wss.on('connection', (ws) => {
     ws.isAlive = true;
     ws.packetCount = 0; 
-    ws.lastSend = 0; 
     
     ws.on('pong', () => { ws.isAlive = true; });
     ws.on('message', (data) => {
         try {
             ws.packetCount++;
-            if (ws.packetCount > 10000 || data.length > 5000000) return; 
-
-            const now = Date.now();
-            if (now - ws.lastSend < 50) return; 
-            ws.lastSend = now;
+            if (ws.packetCount > 5000) return; 
+            if (data.length > 1000000) return; // ⚡ จำกัด Payload ห้ามเกิน 1MB 
 
             if (Buffer.isBuffer(data)) {
                 const type = data[0];
@@ -404,8 +349,7 @@ wss.on('connection', (ws) => {
                 else if (type === 1) { 
                     const userInfo = tokens.get(tokenMap.get(ws));
                     if (!userInfo) return;
-                    
-                    userInfo.lastActive = now; 
+                    userInfo.lastActive = Date.now(); 
 
                     const dataLen = data.length;
                     const newbuffer = Buffer.allocUnsafe(22 + (dataLen - 6));
@@ -415,20 +359,11 @@ wss.on('connection', (ws) => {
                     newbuffer.writeUInt8(data.readUInt8(5) !== 0 ? 1 : 0, 21); 
                     data.slice(6).copy(newbuffer, 22);
                     
-                    // ⚡ BROADCAST: ใช้ Redis กระจายข้อมูลข้าม Server 
                     if (pub) {
-                        pub.publishBuffer("ws-broadcast", newbuffer);
+                        broadcast(newbuffer); // 🚀 โยนขึ้น Redis ให้ทุก Server จัดการ
                     } else {
-                        // Fallback โหมด Single Server
                         const connections = wsMap.get(userInfo.uuid);
-                        if (connections) { 
-                            if (connections.size > 1000) return; 
-                            connections.forEach(tws => { 
-                                if (tws.readyState === WebSocket.OPEN && (newbuffer.readUInt8(21) === 1 || tws !== ws)) { 
-                                    tws.send(newbuffer); 
-                                } 
-                            }); 
-                        }
+                        if (connections) fastSend(connections, newbuffer, newbuffer.readUInt8(21) === 1 ? null : ws);
                     }
                 }
                 else if (type === 2 || type === 3) {
@@ -456,16 +391,11 @@ wss.on('connection', (ws) => {
     });
 });
 
-// ==========================================
-// 🛑 GRACEFUL SHUTDOWN
-// ==========================================
+// 🛑 6. Production Mindset: Graceful Shutdown
 function shutdownSafely() {
-    console.log(`\n${c.y}⚠️ [SHUTDOWN] Closing connections safely...${c.rst}`);
+    if (!isProd) console.log(`\n${c.y}⚠️ [SHUTDOWN] Closing connections safely...${c.rst}`);
     wss.clients.forEach(ws => ws.close(1001, 'Server Restarting'));
-    server.close(() => {
-        console.log(`${c.r}⛔ Server closed. Bye!${c.rst}`);
-        process.exit(0);
-    });
+    server.close(() => process.exit(0));
     setTimeout(() => process.exit(1), 5000); 
 }
 process.on('SIGTERM', shutdownSafely);
@@ -473,8 +403,9 @@ process.on('SIGINT', shutdownSafely);
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`\n${c.p}==========================================${c.rst}`);
-    console.log(`${c.b}🚀 BIGAVTAR CLOUD - ULTIMATE PRO EDITION${c.rst}`);
-    console.log(`${c.g}✅ Render Ready (ENV SECRETS + PORT)${c.rst}`);
-    console.log(`${c.g}✅ Redis Cluster Scale-Out ENABLED${c.rst}`);
+    console.log(`${c.b}🚀 BIGAVTAR CLOUD - FULL PRODUCTION GRADE${c.rst}`);
+    console.log(`${c.g}✅ Redis Base64 Broadcast & FastSend${c.rst}`);
+    console.log(`${c.g}✅ Production Logging & Health Checks${c.rst}`);
+    console.log(`${c.g}✅ ENV Secrets & RAM Cleanup${c.rst}`);
     console.log(`${c.p}==========================================${c.rst}\n`);
 });
