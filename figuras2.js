@@ -1,4 +1,4 @@
-require('dotenv').config();
+require('dotenv').config(); // ✅ โหลด ENV (ถ้ามี)
 const express = require('express');
 const http = require('http'); 
 const https = require('https');
@@ -12,51 +12,45 @@ const crypto = require('crypto');
 const mysql = require('mysql2/promise');
 const rateLimit = require('express-rate-limit'); 
 const compression = require('compression'); 
-const Redis = require('ioredis');
 
-// 🎨 Console colors & Env Config
+// 🎨 Console colors
 const c = { g: '\x1b[32m', b: '\x1b[36m', y: '\x1b[33m', r: '\x1b[31m', p: '\x1b[35m', rst: '\x1b[0m' };
 const logTime = () => `[${new Date().toLocaleTimeString('th-TH')}]`;
-const isProd = process.env.NODE_ENV === 'production';
 
-// 🛑 1. Stability: ป้องกันเซิร์ฟเวอร์ดับ (Uncaught/Unhandled)
 process.on('uncaughtException', (err) => { 
-    fs.appendFileSync("error.log", `${logTime()} [Uncaught Exception] ${err.stack}\n`);
     console.error(`${c.r}${logTime()} ⚠️ [CRASH PREVENTED] Error: ${err.message}${c.rst}`); 
 });
 process.on('unhandledRejection', (reason) => { 
-    fs.appendFileSync("error.log", `${logTime()} [Unhandled Rejection] ${reason}\n`);
     console.error(`${c.r}${logTime()} ⚠️ [CRASH PREVENTED] Rejection: ${reason}${c.rst}`); 
 });
 
+// ✅ แก้ไข: ใช้ PORT จาก Render Environment
 const PORT = process.env.PORT || 8080; 
-// 🚀 ขยายลิมิตเป็น 35MB ตามที่คุณต้องการ เพื่อไม่ให้เกมตัดการเชื่อมต่อ
+// ✅ แก้ไข: ขยายลิมิตเป็น 35MB สำหรับโมเดลขนาดใหญ่
 const LIMIT_BYTES = 35 * 1024 * 1024; 
-const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD; 
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "k0936738325@";
 
 // 🗄️ MySQL Database setup
 const dbPool = mysql.createPool({
-    host: process.env.DB_HOST, 
-    user: process.env.DB_USER, 
-    password: process.env.DB_PASS, 
-    database: process.env.DB_NAME, 
+    host: 'poland.nami-ch.com', 
+    user: 'figura_blacklist1', 
+    password: process.env.DB_PASSWORD || 'kOj_W1gm*6qbjqz2', 
+    database: 'spongfan_figura_blacklist', 
     waitForConnections: true,
-    connectionLimit: process.env.DB_LIMIT ? parseInt(process.env.DB_LIMIT) : 50, 
+    connectionLimit: 50, 
     queueLimit: 0,
     enableKeepAlive: true,
     keepAliveInitialDelay: 0
 });
 
-// 📁 ตรวจสอบและสร้างโฟลเดอร์ avatars เสมอ
+// ✅ แก้ไข: ตรวจสอบและสร้างโฟลเดอร์เก็บสกินให้ชัวร์
 const avatarsDir = path.join(__dirname, 'avatars');
-if (!fs.existsSync(avatarsDir)) {
-    fs.mkdirSync(avatarsDir, { recursive: true });
-}
+if (!fs.existsSync(avatarsDir)) fs.mkdirSync(avatarsDir, { recursive: true });
 
 const app = express();
 app.set('trust proxy', 1);
 app.use(cors());
-app.use(compression()); 
+app.use(compression()); // ✅ เพิ่ม Gzip บีบอัดข้อมูลให้ส่งโมเดลเร็วขึ้น
 
 const apiLimiter = rateLimit({
     windowMs: 1 * 60 * 1000, 
@@ -88,75 +82,18 @@ function formatUuid(uuid) {
     return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
 }
 
-// ⚡ 2. Performance: FastSend ลดภาระ Loop
-function fastSend(connections, data, excludeWs = null) {
-    if (!connections) return;
-    for (const ws of connections) {
-        if (ws.readyState === WebSocket.OPEN && ws !== excludeWs) {
-            ws.send(data, { binary: true }, () => {}); 
-        }
-    }
-}
-
-// 🚀 3. Scale: Redis Integration (Base64 Broadcast)
-let pub, sub;
-const REDIS_URL = process.env.REDIS_URL;
-
-if (REDIS_URL) {
-    pub = new Redis(REDIS_URL);
-    sub = new Redis(REDIS_URL);
-
-    pub.on("connect", () => {
-        console.log(`${c.g}${logTime()} ✅ Redis Publisher Connected${c.rst}`);
-    });
-    
-    pub.on("error", (err) => {
-        console.error(`${c.r}${logTime()} ❌ Redis Error: ${err.message}${c.rst}`);
-    });
-
-    sub.subscribe("ws-broadcast");
-    
-    sub.on("message", (channel, msg) => {
-        if (channel === "ws-broadcast") {
-            try {
-                const messageBuffer = Buffer.from(msg, "base64");
-                if (messageBuffer.length >= 17) {
-                    const uuidHex = messageBuffer.slice(1, 17).toString('hex');
-                    const uuid = formatUuid(uuidHex);
-                    fastSend(wsMap.get(uuid), messageBuffer); 
-                }
-            } catch (e) {
-                if (!isProd) console.error("Redis Decode Error", e);
-            }
-        }
-    });
-} else {
-    console.log(`${c.y}${logTime()} ⚠️ Running in Single-Server Mode (No Redis)${c.rst}`);
-}
-
-function broadcast(bufferData) {
-    if (pub) {
-        pub.publish("ws-broadcast", bufferData.toString("base64"));
-    }
-}
-
-// 🧹 Auto-GC & RAM Leak Cleanup
+// 🧹 Auto-GC Server Cleanup ทุก 5 นาที
 setInterval(() => { 
     if (global.gc) global.gc(); 
     const now = Date.now();
     for (let [id, data] of server_ids.entries()) {
         if (now - data.time > 60000) server_ids.delete(id); 
     }
-}, 5 * 60 * 1000); 
+}, 5 * 60 * 1000);
 
-setInterval(() => {
-    const now = Date.now();
-    for (const [token, data] of tokens.entries()) {
-        if (now - (data.lastActive || now) > 60 * 60 * 1000) tokens.delete(token);
-    }
-}, 60 * 60 * 1000);
-
-// ⚡ Active Kick (Sync Database ทุก 30 วิ)
+// ==========================================
+// ⚡ ระบบ ACTIVE KICK 
+// ==========================================
 async function syncBlacklistAndKick() {
     try {
         const [rows] = await dbPool.query('SELECT username FROM figura_blacklist');
@@ -174,6 +111,7 @@ async function syncBlacklistAndKick() {
                 fsp.unlink(avatarFile).catch(() => {}); 
                 
                 if (wsMap.has(userInfo.uuid)) wsMap.delete(userInfo.uuid);
+                console.log(`${c.r}${logTime()} ⛔ [ACTIVE BAN] Kicked: ${userInfo.username}${c.rst}`);
             }
         }
     } catch (e) {} 
@@ -184,7 +122,11 @@ syncBlacklistAndKick();
 // ==========================================
 // 🌐 REST API
 // ==========================================
-app.get('/api/motd', (req, res) => res.status(200).send("§b§l💎 BIGAVTAR §a§lONLINE"));
+
+app.get('/api/motd', (req, res) => {
+    res.status(200).send("§b§l💎 BIGAVTAR §a§lONLINE §e§l(BY chick_chiix)\n§f§lULTIMATE - เร็ว แรง ทะลุนรก!");
+});
+
 app.get('/api/version', (req, res) => res.json({"release":"0.1.5", "prerelease":"0.1.5"}));
 
 app.get('/api/limits', (req, res) => {
@@ -207,19 +149,23 @@ app.get('/api/auth/verify', async (req, res) => {
         const sessionData = server_ids.get(sid);
         if (!sessionData || sqlBlacklist.has(sessionData.username.toLowerCase())) return res.status(404).json({ error: 'Auth failed' });
         
-        const response = await fastAxios.get("https://sessionserver.mojang.com/session/minecraft/hasJoined", { params: { username: sessionData.username, serverId: sid } });
-        server_ids.delete(sid); 
+        const response = await fastAxios.get("https://sessionserver.mojang.com/session/minecraft/hasJoined", {
+            params: { username: sessionData.username, serverId: sid }
+        });
         
+        server_ids.delete(sid); 
         const token = crypto.randomBytes(16).toString('hex');
         const hexUuid = response.data.id;
         
         tokens.set(token, { 
-            uuid: formatUuid(hexUuid), hexUuid: hexUuid, username: response.data.name,
+            uuid: formatUuid(hexUuid), 
+            hexUuid: hexUuid, 
+            username: response.data.name,
             clientIp: req.headers['x-forwarded-for'] || req.socket.remoteAddress,
-            projectInfo: req.headers['user-agent'] || 'Unknown Tool', lastActive: Date.now() 
+            projectInfo: req.headers['user-agent'] || 'Unknown Tool'
         });
         
-        if (!isProd) console.log(`${c.b}${logTime()} ⚡ [LOGIN] ${c.y}${response.data.name}${c.rst}`);
+        console.log(`${c.b}${logTime()} ⚡ [LOGIN] ${c.y}${response.data.name}${c.rst}`);
         res.send(token);
     } catch (error) { res.status(500).json({ error: 'Internal Error' }); }
 });
@@ -227,15 +173,12 @@ app.get('/api/auth/verify', async (req, res) => {
 app.post('/api/equip', (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end(); 
-    userInfo.lastActive = Date.now(); 
     
     if (wsMap.has(userInfo.uuid)) {
         const buffer = Buffer.allocUnsafe(17); 
         buffer.writeUInt8(2, 0); 
         Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
-        
-        if (pub) broadcast(buffer);
-        else fastSend(wsMap.get(userInfo.uuid), buffer);
+        wsMap.get(userInfo.uuid).forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(buffer); });
     }
     res.send("success");
 });
@@ -243,7 +186,6 @@ app.post('/api/equip', (req, res) => {
 app.put('/api/avatar', (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end();
-    userInfo.lastActive = Date.now();
     
     let contentLength = parseInt(req.headers['content-length'] || '0');
     if (contentLength > LIMIT_BYTES) return res.status(413).end();
@@ -267,40 +209,19 @@ app.put('/api/avatar', (req, res) => {
                 const buffer = Buffer.allocUnsafe(17); 
                 buffer.writeUInt8(2, 0); 
                 Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
-                
-                if (pub) broadcast(buffer);
-                else fastSend(wsMap.get(userInfo.uuid), buffer);
+                wsMap.get(userInfo.uuid).forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(buffer); });
             }
             res.send("success"); 
         } catch (err) { res.status(500).send({ error: "File error" }); }
     });
 });
 
-app.delete('/api/avatar', async (req, res) => {
-    const userInfo = tokens.get(req.headers['token']);
-    if (!userInfo) return res.status(401).end();
-    userInfo.lastActive = Date.now();
-    
-    const filePath = path.join(avatarsDir, `${userInfo.uuid}.moon`);
-    try {
-        await fsp.unlink(filePath); 
-        hashCache.delete(userInfo.uuid);
-        if (wsMap.has(userInfo.uuid)) {
-            const buffer = Buffer.allocUnsafe(17); 
-            buffer.writeUInt8(2, 0); 
-            Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
-            
-            if (pub) broadcast(buffer);
-            else fastSend(wsMap.get(userInfo.uuid), buffer);
-        }
-        res.send("success");
-    } catch (err) { res.status(404).end(); }
-});
-
 app.get('/api/:uuid/avatar', async (req, res) => { 
     const uuidStr = req.params.uuid;
     if (["motd", "version", "auth", "limits", "stats-secret"].includes(uuidStr)) return res.status(404).end();
-    const avatarFile = path.join(avatarsDir, `${formatUuid(uuidStr)}.moon`);
+
+    const uuidFmt = formatUuid(uuidStr);
+    const avatarFile = path.join(avatarsDir, `${uuidFmt}.moon`);
     try {
         await fsp.access(avatarFile); 
         res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
@@ -316,70 +237,47 @@ app.get('/api/:uuid', async (req, res) => {
     const uuid = formatUuid(uuidStr);
     if (!uuid) return res.status(404).end();
 
-    const data = { uuid: uuid, rank: "normal", equipped: [], lastUsed: new Date().toISOString(), version: "0.1.5", banned: false };
+    const data = {
+        uuid: uuid, rank: "normal", equipped: [], lastUsed: new Date().toISOString(),
+        equippedBadges: { special: Array(15).fill(0), pride: Array(30).fill(0) },
+        version: "0.1.5", banned: false
+    };
+
     let fileHash = hashCache.get(uuid);
     const avatarFile = path.join(avatarsDir, `${uuid}.moon`);
     
     if (!fileHash) {
         try {
             await fsp.access(avatarFile);
+            const hash = crypto.createHash('sha256');
             const fileBuffer = await fsp.readFile(avatarFile);
-            fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+            fileHash = hash.update(fileBuffer).digest('hex');
             hashCache.set(uuid, fileHash);
         } catch (e) {}
     }
+    
     if (fileHash) data.equipped.push({ id: 'avatar', owner: uuid, hash: fileHash });
     res.json(data);
 });
 
-// 🧠 4. Health Check แบบ Production
-app.get('/health', (req, res) => {
-    res.json({
-        status: "ok",
-        uptime: process.uptime(),
-        memory_heapUsed_MB: Math.round(process.memoryUsage().heapUsed / 1024 / 1024)
-    });
+app.get('/ping', (req, res) => res.send('ok'));
+app.get('/health', (req, res) => res.json({ status: "ok", uptime: process.uptime() }));
+
+app.get('/', (req, res) => {
+    res.status(200).send("§b§lBIGAVTAR CLOUD §f§l- §a§lONLINE");
 });
 
-app.get('/ping', (req, res) => res.send('ok'));
-app.use(express.json());
-
-app.get('/', (req, res) => res.status(200).send("§b§lBIGAVTAR CLOUD §f§l- §a§lONLINE"));
-
 // ==========================================
-// ⚡ WEBSOCKET (LOW LATENCY + ANTI-SPAM)
+// ⚡ WEBSOCKET 
 // ==========================================
 const server = http.createServer(app);
-server.keepAliveTimeout = 60000;  
-server.headersTimeout = 65000;
-
-const wss = new WebSocket.Server({ server, perMessageDeflate: false });
-
-setInterval(() => {
-    wss.clients.forEach((ws) => { 
-        if (ws.isAlive === false) return ws.terminate(); 
-        ws.isAlive = false;
-        ws.packetCount = 0; 
-        if (ws.readyState === WebSocket.OPEN) ws.ping(); 
-    });
-}, 60000); 
+const wss = new WebSocket.Server({ server });
 
 wss.on('connection', (ws) => {
     ws.isAlive = true;
-    ws.packetCount = 0; 
-    ws.lastSend = 0;
-    
     ws.on('pong', () => { ws.isAlive = true; });
     ws.on('message', (data) => {
         try {
-            ws.packetCount++;
-            if (ws.packetCount > 5000) return; 
-            if (data.length > LIMIT_BYTES) return; 
-
-            const now = Date.now();
-            if (now - ws.lastSend < 50) return; 
-            ws.lastSend = now;
-
             if (Buffer.isBuffer(data)) {
                 const type = data[0];
                 if (type === 0) {
@@ -389,8 +287,6 @@ wss.on('connection', (ws) => {
                 else if (type === 1) { 
                     const userInfo = tokens.get(tokenMap.get(ws));
                     if (!userInfo) return;
-                    userInfo.lastActive = Date.now(); 
-
                     const dataLen = data.length;
                     const newbuffer = Buffer.allocUnsafe(22 + (dataLen - 6));
                     newbuffer.writeUInt8(0, 0); 
@@ -399,11 +295,13 @@ wss.on('connection', (ws) => {
                     newbuffer.writeUInt8(data.readUInt8(5) !== 0 ? 1 : 0, 21); 
                     data.slice(6).copy(newbuffer, 22);
                     
-                    if (pub) {
-                        broadcast(newbuffer); 
-                    } else {
-                        const connections = wsMap.get(userInfo.uuid);
-                        if (connections) fastSend(connections, newbuffer, newbuffer.readUInt8(21) === 1 ? null : ws);
+                    const connections = wsMap.get(userInfo.uuid);
+                    if (connections) { 
+                        connections.forEach(tws => { 
+                            if (tws.readyState === WebSocket.OPEN && (newbuffer.readUInt8(21) === 1 || tws !== ws)) { 
+                                tws.send(newbuffer); 
+                            } 
+                        }); 
                     }
                 }
                 else if (type === 2 || type === 3) {
@@ -419,33 +317,9 @@ wss.on('connection', (ws) => {
             }
         } catch (e) {} 
     });
-    
-    ws.on('error', () => {}); 
-    ws.on('close', () => {
-        const token = tokenMap.get(ws);
-        if (token && tokens.has(token)) {
-            const uuid = tokens.get(token).uuid;
-            if (wsMap.has(uuid)) { wsMap.get(uuid).delete(ws); if (wsMap.get(uuid).size === 0) wsMap.delete(uuid); }
-        }
-        tokenMap.delete(ws);
-    });
 });
 
-// 🛑 Graceful Shutdown
-function shutdownSafely() {
-    if (!isProd) console.log(`\n${c.y}⚠️ [SHUTDOWN] Closing connections safely...${c.rst}`);
-    wss.clients.forEach(ws => ws.close(1001, 'Server Restarting'));
-    server.close(() => process.exit(0));
-    setTimeout(() => process.exit(1), 5000); 
-}
-process.on('SIGTERM', shutdownSafely);
-process.on('SIGINT', shutdownSafely);
-
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`\n${c.p}==========================================${c.rst}`);
-    console.log(`${c.b}🚀 BIGAVTAR CLOUD - FULL PRODUCTION GRADE${c.rst}`);
-    console.log(`${c.g}✅ Redis Base64 Broadcast & FastSend${c.rst}`);
-    console.log(`${c.g}✅ Production Logging & Health Checks${c.rst}`);
-    console.log(`${c.g}✅ ENV Secrets & RAM Cleanup${c.rst}`);
-    console.log(`${c.p}==========================================${c.rst}\n`);
+    console.log(`\n${c.b}🚀 BIGAVTAR CLOUD - READY FOR PRODUCTION${c.rst}`);
+    console.log(`${c.g}✅ Port: ${PORT} | Limit: 35MB${c.rst}\n`);
 });
