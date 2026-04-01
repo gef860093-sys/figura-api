@@ -9,7 +9,6 @@ const fsp = require('fs/promises');
 const cors = require('cors');
 const crypto = require('crypto');
 const mysql = require('mysql2/promise');
-const rateLimit = require('express-rate-limit'); 
 const compression = require('compression'); 
 const Redis = require('ioredis');
 
@@ -20,16 +19,28 @@ process.on('uncaughtException', (err) => {
     console.error(`${c.r}${logTime()} ⚠️ Error: ${err.message}${c.rst}`); 
 });
 
-// ✅ ใช้ Port จาก Render
 const PORT = process.env.PORT || 8080; 
 const LIMIT_BYTES = 35 * 1024 * 1024; 
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD; 
+
+const avatarsDir = path.join(__dirname, 'avatars');
+if (!fs.existsSync(avatarsDir)) fs.mkdirSync(avatarsDir, { recursive: true });
+
+const dbPool = mysql.createPool({
+    host: process.env.DB_HOST,
+    user: process.env.DB_USER,
+    password: process.env.DB_PASS,
+    database: process.env.DB_NAME,
+    waitForConnections: true,
+    connectionLimit: 50
+});
 
 const app = express();
 app.set('trust proxy', 1);
 app.use(cors());
 app.use(compression());
 
-// 🔥 [FIX] ตัวแก้ปัญหาเครื่องหมาย // ซ้อนกันที่ทำให้เกิด Error ในรูป
+// 🔥 [FIX] แก้ไขปัญหาเครื่องหมาย // ซ้อนกันใน URL ที่ทำให้เกม Disconnected
 app.use((req, res, next) => {
     if (req.url.includes('//')) {
         req.url = req.url.replace(/\/{2,}/g, '/');
@@ -37,24 +48,14 @@ app.use((req, res, next) => {
     next();
 });
 
-// 🧠 สำหรับเก็บข้อมูลใน RAM
-const server_ids = new Map();
 const tokens = new Map();
 const tokenMap = new Map(); 
 const wsMap = new Map(); 
 
-// 🗄️ MySQL Database (ใช้ ENV)
-const dbPool = mysql.createPool({
-    host: process.env.DB_HOST,
-    user: process.env.DB_USER,
-    password: process.env.DB_PASS,
-    database: process.env.DB_NAME,
-    connectionLimit: 50
-});
-
-// 🚀 Redis สำหรับซิงค์ข้อมูล
+// 🚀 Redis Publisher/Subscriber (ใช้ ioredis)
 const pub = new Redis(process.env.REDIS_URL);
 const sub = new Redis(process.env.REDIS_URL);
+
 sub.subscribe("ws-broadcast");
 sub.on("message", (channel, msg) => {
     const buffer = Buffer.from(msg, "base64");
@@ -73,11 +74,19 @@ sub.on("message", (channel, msg) => {
 
 app.get('/api/auth/id', (req, res) => {
     const serverID = crypto.randomBytes(16).toString('hex');
-    server_ids.set(serverID, { username: req.query.username, time: Date.now() });
     res.send(serverID);
 });
 
 app.get('/api/motd', (req, res) => res.send("§b§l💎 BIGAVTAR §a§lONLINE"));
+
+app.get('/api/:uuid/avatar', async (req, res) => { 
+    const avatarFile = path.join(avatarsDir, `${req.params.uuid}.moon`);
+    try {
+        await fsp.access(avatarFile); 
+        res.setHeader('Content-Type', 'application/json'); 
+        res.sendFile(avatarFile);
+    } catch (e) { res.status(404).end(); }
+});
 
 app.get('/ping', (req, res) => res.send('ok'));
 
@@ -99,5 +108,5 @@ wss.on('connection', (ws) => {
 });
 
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`${c.g}🚀 BIGAVTAR CLOUD FIX LIVE ON PORT ${PORT}${c.rst}`);
+    console.log(`${c.g}🚀 BIGAVTAR CLOUD OMEGA LIVE ON PORT ${PORT}${c.rst}`);
 });
