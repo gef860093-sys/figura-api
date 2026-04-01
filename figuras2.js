@@ -122,7 +122,7 @@ syncBlacklistAndKick();
 // ✅ เรียง API ที่มีชื่อเฉพาะตัว (Static) ไว้ด้านบนสุด เพื่อป้องกันการทับซ้อนกับ Dynamic UUID
 
 app.get('/api/motd', (req, res) => {
-    res.status(200).send("§b§l💎 BIGAVTAR §a§lONLINE §e§l(BY chick_chiix)\n§f§lULTIMATE - เร็ว แรง ทะลุนรก! §f§lคำเตือน : §a§lห้ามเอาไปใช้โปรเจกต์อื่นโดยเด็ดขาด หากผบเห็นโดนค่าปรับ X2");
+    res.status(200).send("§b§l💎 BIGAVTAR §a§lONLINE §e§l(BY chick_chiix)\n§f§lULTIMATE - เร็ว แรง ทะลุนรก! §f§lคำเตือน : §a§lห้ามเอาไปใช้โปรเจกต์อื่นโดยเด็ดขาด หากผบเห็นโดนค่าปรับ X2 : ต้องทักมาขอก่อน");
 });
 
 app.get('/api/version', (req, res) => res.json({"release":"0.1.5", "prerelease":"0.1.5"}));
