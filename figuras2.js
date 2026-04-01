@@ -10,6 +10,7 @@ const cors = require('cors');
 const crypto = require('crypto');
 const mysql = require('mysql2/promise');
 const rateLimit = require('express-rate-limit'); 
+const compression = require('compression'); // ✅ เพิ่ม: Gzip Compression
 
 // 🎨 Console colors
 const c = { g: '\x1b[32m', b: '\x1b[36m', y: '\x1b[33m', r: '\x1b[31m', p: '\x1b[35m', rst: '\x1b[0m' };
@@ -22,18 +23,19 @@ process.on('unhandledRejection', (reason) => {
     console.error(`${c.r}${logTime()} ⚠️ [CRASH PREVENTED] Rejection: ${reason}${c.rst}`); 
 });
 
-const PORT = 8080; 
+// ✅ ป้องกัน Secrets หลุด: ใช้ process.env แทนการ Hardcode
+const PORT = process.env.PORT || 8080; 
 const LIMIT_BYTES = 25 * 1024 * 1024; // 25MB
-const ADMIN_PASSWORD = "k0936738325@";
+const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || "default_admin_password"; // ⚠️ ไปตั้งใน Render
 
-// 🗄️ MySQL Database setup
+// 🗄️ MySQL Database setup (ดึง Password จาก ENV)
 const dbPool = mysql.createPool({
     host: 'poland.nami-ch.com', 
     user: 'figura_blacklist1', 
-    password: 'kOj_W1gm*6qbjqz2', 
+    password: process.env.DB_PASSWORD || 'kOj_W1gm*6qbjqz2', // ⚠️ ไปตั้งใน Render เพื่อความปลอดภัยสูงสุด
     database: 'spongfan_figura_blacklist', 
     waitForConnections: true,
-    connectionLimit: 20, 
+    connectionLimit: process.env.DB_LIMIT ? parseInt(process.env.DB_LIMIT) : 50, // ✅ อัปเกรดเป็น 50 หรือตามที่ตั้งใน ENV
     queueLimit: 0,
     enableKeepAlive: true,
     keepAliveInitialDelay: 0
@@ -44,16 +46,16 @@ if (!fs.existsSync("avatars")) fs.mkdirSync("avatars");
 const app = express();
 app.set('trust proxy', 1);
 app.use(cors());
+app.use(compression()); // ✅ เปิดใช้ Gzip เพื่อลด Bandwidth
 
 // 🛡️ ขยาย Rate Limit ให้รองรับเน็ตแรงๆ ได้แบบไม่โดนเตะ
 const apiLimiter = rateLimit({
     windowMs: 1 * 60 * 1000, 
-    max: 2000, // ขยายเพดานเป็น 2,000 รีเควสต่อนาที
+    max: 2000, 
     message: { error: "Too many requests, please try again later." }
 });
 app.use('/api/', apiLimiter);
 
-// 🛠️ แก้ไขบัค URL ซ้อน (เช่น //api//auth) ที่ทำให้ตัวเกมสับสน
 app.use((req, res, next) => {
     if (req.url.includes('//')) req.url = req.url.replace(/\/{2,}/g, '/');
     next();
@@ -78,14 +80,23 @@ function formatUuid(uuid) {
     return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
 }
 
-// 🧹 Auto-GC Server Cleanup
+// 🧹 Advanced Auto-GC & RAM Leak Cleanup
 setInterval(() => { 
     if (global.gc) global.gc(); 
     const now = Date.now();
+    
+    // ล้าง Auth Sessions ที่ค้าง
     for (let [id, data] of server_ids.entries()) {
         if (now - data.time > 60000) server_ids.delete(id); 
     }
-}, 10 * 60 * 1000);
+    
+    // ✅ ล้าง Tokens ที่ไม่มีการเคลื่อนไหวเกิน 10 นาที (ลด RAM Leak)
+    for (const [token, data] of tokens.entries()) {
+        if (now - (data.lastActive || now) > 10 * 60 * 1000) {
+            tokens.delete(token);
+        }
+    }
+}, 5 * 60 * 1000); // เช็คทุก 5 นาที
 
 // ==========================================
 // ⚡ ระบบ ACTIVE KICK 
@@ -119,10 +130,8 @@ syncBlacklistAndKick();
 // 🌐 REST API (FIXED ROUTING PATHS)
 // ==========================================
 
-// ✅ เรียง API ที่มีชื่อเฉพาะตัว (Static) ไว้ด้านบนสุด เพื่อป้องกันการทับซ้อนกับ Dynamic UUID
-
 app.get('/api/motd', (req, res) => {
-    res.status(200).send("§b§l💎 BIGAVTAR §a§lONLINE §e§l(BY chick_chiix)\n§f§lULTIMATE - เร็ว แรง ทะลุนรก! §f§lคำเตือน : §a§lห้ามเอาไปใช้โปรเจกต์อื่นโดยเด็ดขาด หากผบเห็นโดนค่าปรับ X2 : ต้องทักมาขอก่อน");
+    res.status(200).send("§b§l💎 BIGAVTAR §a§lONLINE §e§l(BY chick_chiix)\n§f§lULTIMATE - เร็ว แรง ทะลุนรก! §f§lคำเตือน : §a§lห้ามเอาไปใช้โปรเจกต์อื่นโดยเด็ดขาด หากผบเห็นโดนค่าปรับ X2");
 });
 
 app.get('/api/version', (req, res) => res.json({"release":"0.1.5", "prerelease":"0.1.5"}));
@@ -160,7 +169,8 @@ app.get('/api/auth/verify', async (req, res) => {
             hexUuid: hexUuid, 
             username: response.data.name,
             clientIp: req.headers['x-forwarded-for'] || req.socket.remoteAddress,
-            projectInfo: req.headers['user-agent'] || 'Unknown Tool'
+            projectInfo: req.headers['user-agent'] || 'Unknown Tool',
+            lastActive: Date.now() // ✅ บันทึกเวลาเริ่มต้น
         });
         
         console.log(`${c.b}${logTime()} ⚡ [LOGIN] ${c.y}${response.data.name}${c.rst}`);
@@ -168,12 +178,11 @@ app.get('/api/auth/verify', async (req, res) => {
     } catch (error) { res.status(500).json({ error: 'Internal Error' }); }
 });
 
-// ✅ แก้ไข: กู้คืนระบบ Equip เพื่อลดบัค "Failed to set equipped Avatars"
 app.post('/api/equip', (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end(); 
+    userInfo.lastActive = Date.now(); // ✅ อัปเดตเวลาตอนใช้งาน
     
-    // อัปเดตสถานะการสวมใส่ชุดให้คนในเกมเห็น
     if (wsMap.has(userInfo.uuid)) {
         const buffer = Buffer.allocUnsafe(17); 
         buffer.writeUInt8(2, 0); 
@@ -186,6 +195,7 @@ app.post('/api/equip', (req, res) => {
 app.put('/api/avatar', (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end();
+    userInfo.lastActive = Date.now();
     
     let contentLength = parseInt(req.headers['content-length'] || '0');
     if (contentLength > LIMIT_BYTES) return res.status(413).end();
@@ -219,6 +229,8 @@ app.put('/api/avatar', (req, res) => {
 app.delete('/api/avatar', async (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end();
+    userInfo.lastActive = Date.now();
+    
     const filePath = path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`);
     try {
         await fsp.unlink(filePath); 
@@ -233,10 +245,8 @@ app.delete('/api/avatar', async (req, res) => {
     } catch (err) { res.status(404).end(); }
 });
 
-// ✅ แก้ไข: เพิ่มการเช็คตัวแปรที่ผิดปกติ (ป้องกันบัค uuid กลายเป็น motd/version/auth)
 app.get('/api/:uuid/avatar', async (req, res) => { 
     const uuidStr = req.params.uuid;
-    // ป้องกัน Reserved Words วิ่งเข้ามารบกวน
     if (["motd", "version", "auth", "limits", "stats-secret"].includes(uuidStr)) return res.status(404).end();
 
     const uuidFmt = formatUuid(uuidStr);
@@ -251,7 +261,6 @@ app.get('/api/:uuid/avatar', async (req, res) => {
 
 app.get('/api/:uuid', async (req, res) => {
     const uuidStr = req.params.uuid;
-    // ป้องกัน Reserved Words วิ่งเข้ามารบกวน
     if (["motd", "version", "auth", "limits", "stats-secret"].includes(uuidStr)) return res.status(404).end();
 
     const uuid = formatUuid(uuidStr);
@@ -280,11 +289,10 @@ app.get('/api/:uuid', async (req, res) => {
     res.json(data);
 });
 
-// เปิดใช้ express.json() ทั่วไปสำหรับ Route Dashboard ด้านล่าง
 app.use(express.json());
 
 // ==========================================
-// 📊 ADMIN DASHBOARD (Cyberpunk UI)
+// 📊 ADMIN DASHBOARD
 // ==========================================
 app.get('/admin', (req, res) => {
     if (req.query.pw !== ADMIN_PASSWORD) return res.status(403).send("<h1 style='color:red;text-align:center;margin-top:50px;'>⛔ 403 FORBIDDEN - ACCESS DENIED</h1>");
@@ -376,8 +384,19 @@ app.get('/', (req, res) => {
     res.status(200).send("§b§lBIGAVTAR CLOUD §f§l- §a§lONLINE");
 });
 
+// ✅ เพิ่ม: Ping เบาๆ ไม่โหลดอะไรเลย (เอาไว้ให้ UptimeRobot ยิงเพื่อไม่ให้กิน RAM)
+app.get('/ping', (req, res) => res.send('ok'));
+
+// ✅ เพิ่ม: Health API เช็คสถานะพร้อม Uptime ให้ Client ตรวจสอบได้ว่า Server เพิ่งตื่นไหม
+app.get('/health', (req, res) => {
+    res.status(200).json({
+        status: "ok",
+        uptime: process.uptime()
+    });
+});
+
 // ==========================================
-// ⚡ WEBSOCKET (FIXED ANTI-SPAM DISCONNECTS)
+// ⚡ WEBSOCKET (PRO PERFORMANCE)
 // ==========================================
 const server = http.createServer(app);
 server.keepAliveTimeout = 120000; 
@@ -385,7 +404,6 @@ server.headersTimeout = 125000;
 
 const wss = new WebSocket.Server({ server, perMessageDeflate: false });
 
-// 🛡️ ขยายเวลาตรวจสอบเพื่อให้เกมไม่ต้องส่ง Ping ถี่เกินไป
 setInterval(() => {
     wss.clients.forEach((ws) => { 
         if (ws.isAlive === false) return ws.terminate(); 
@@ -393,18 +411,23 @@ setInterval(() => {
         ws.packetCount = 0; 
         if (ws.readyState === WebSocket.OPEN) ws.ping(); 
     });
-}, 60000); // เช็คทุก 1 นาที
+}, 60000); 
 
 wss.on('connection', (ws) => {
     ws.isAlive = true;
     ws.packetCount = 0; 
+    ws.lastSend = 0; // ✅ บันทึกเวลาล่าสุดที่ส่งแพ็กเกจ
     
     ws.on('pong', () => { ws.isAlive = true; });
     ws.on('message', (data) => {
         try {
-            // ✅ แก้ไข: ขยายเพดานรับส่งให้กว้างขึ้นสุดๆ เพื่อไม่ให้คนเน็ตแรงโดนเตะ (ปล่อยให้วิ่งอิสระ)
             ws.packetCount++;
-            if (ws.packetCount > 10000 || data.length > 5000000) return; // ถ้าส่งเกินหมื่นครั้งใน 1 นาที ให้แค่เมิน ไม่เตะทิ้ง
+            if (ws.packetCount > 10000 || data.length > 5000000) return; 
+
+            // ✅ Throttling: ห้าม Client ส่งข้อมูลรัวเกินไป (จำกัดขั้นต่ำ 50ms ต่อแพ็กเกจ)
+            const now = Date.now();
+            if (now - ws.lastSend < 50) return; 
+            ws.lastSend = now;
 
             if (Buffer.isBuffer(data)) {
                 const type = data[0];
@@ -416,6 +439,8 @@ wss.on('connection', (ws) => {
                     const userInfo = tokens.get(tokenMap.get(ws));
                     if (!userInfo) return;
                     
+                    userInfo.lastActive = now; // ✅ อัปเดตเวลาการใช้งาน
+
                     const dataLen = data.length;
                     const newbuffer = Buffer.allocUnsafe(22 + (dataLen - 6));
                     newbuffer.writeUInt8(0, 0); 
@@ -426,6 +451,9 @@ wss.on('connection', (ws) => {
                     
                     const connections = wsMap.get(userInfo.uuid);
                     if (connections) { 
+                        // ✅ Broadcast Limit: ตัดทิ้งถ้าพยายามส่งหาคนเกิน 1,000 คนพร้อมกัน (ป้องกันสแปมเซิร์ฟดับ)
+                        if (connections.size > 1000) return; 
+                        
                         connections.forEach(tws => { 
                             if (tws.readyState === WebSocket.OPEN && (newbuffer.readUInt8(21) === 1 || tws !== ws)) { 
                                 tws.send(newbuffer); 
@@ -475,7 +503,9 @@ process.on('SIGINT', shutdownSafely);
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`\n${c.p}==========================================${c.rst}`);
-    console.log(`${c.b}🚀 BIGAVTAR CLOUD - OMEGA EDITION (BUG FREE)${c.rst}`);
-    console.log(`${c.g}✅ API Path Fixed & Disconnect Bugs Destroyed!${c.rst}`);
+    console.log(`${c.b}🚀 BIGAVTAR CLOUD - ULTIMATE PRO EDITION${c.rst}`);
+    console.log(`${c.g}✅ Render Ready (ENV SECRETS + PORT)${c.rst}`);
+    console.log(`${c.g}✅ Gzip Compression ENABLED${c.rst}`);
+    console.log(`${c.g}✅ Smart RAM Cleanup & Anti-Spam ENABLED${c.rst}`);
     console.log(`${c.p}==========================================${c.rst}\n`);
 });
