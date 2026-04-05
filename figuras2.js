@@ -1,5 +1,6 @@
 const express = require('express');
 const http = require('http'); 
+const https = require('https');
 const WebSocket = require('ws');
 const axios = require('axios');
 const path = require('path');
@@ -7,94 +8,210 @@ const fs = require('fs');
 const fsp = require('fs/promises');
 const cors = require('cors');
 const crypto = require('crypto');
+const rateLimit = require('express-rate-limit'); 
 
-const c = { g: '\x1b[32m', b: '\x1b[36m', r: '\x1b[31m', rst: '\x1b[0m' };
+const c = { g: '\x1b[32m', b: '\x1b[36m', y: '\x1b[33m', r: '\x1b[31m', p: '\x1b[35m', rst: '\x1b[0m' };
 const logTime = () => `[${new Date().toLocaleTimeString('th-TH')}]`;
 
 process.on('uncaughtException', (err) => {});
 process.on('unhandledRejection', (reason) => {});
 
 // ==========================================
-// ⚙️ การตั้งค่าเซิร์ฟเวอร์ (นำไปรันบน IP ผู้เช่า)
+// ⚙️ การตั้งค่าสำหรับเซิร์ฟเวอร์ผู้เช่า (RENTER CONFIG)
 // ==========================================
 const PORT = 80; 
+const LIMIT_BYTES = 10 * 1024 * 1024; 
+const ENABLE_WHITELIST = true; 
 
-// 🌐 ลิงก์เชื่อมโยงไปยังเว็บหลักของคุณ (ตรวจสอบให้ตรงกับเว็บปัจจุบัน)
+// 🌐 API Bridge (ลิงก์เว็บหลักของคุณ)
+// ⚠️ อย่าลืมแก้ให้ตรงกับโดเมนเว็บใหม่ของคุณ (เช่น https://dev2.in.th/api.php)
 const API_URL = "https://bigavatar.dpdns.org/api.php"; 
 
-// 🔑 นำ API Key จากหน้าแดชบอร์ดมาใส่ที่นี่ (แจกให้ผู้เช่าแต่ละคนไม่เหมือนกัน)
-const API_KEY = "ใส่_API_KEY_จากหน้าเว็บที่นี่ครับ"; 
+// 🔑 API Key ประจำเซิร์ฟเวอร์ (เอามาจากหน้าเว็บ Dashboard)
+const API_KEY = "เอา_API_KEY_จากหน้าเว็บมาใส่ตรงนี้ครับ"; 
 
-const ENABLE_WHITELIST = true; 
-const LIMIT_BYTES = 10 * 1024 * 1024; 
-const WELCOME_MSG = "§b§lขอขอบคุณที่ใช้บริการนะคับ §f§l- §a§lดูรายละเอียดเพิ่มเติมได้ที่: §e§nhttps://dash.faydar.eu.cc";
+// 🌟 ข้อความหลัก (MOTD & Welcome Message)
+const MOTD_MESSAGE = "§b§lขอขอบคุณที่ใช้บริการนะคับ §f§l- §a§lดูรายละเอียดเพิ่มเติมได้ที่: §e§nhttps://dash.faydar.eu.cc";
 // ==========================================
 
 const avatarsDir = path.join(__dirname, "avatars");
 if (!fs.existsSync(avatarsDir)) fs.mkdirSync(avatarsDir);
 
 const app = express();
+app.set('trust proxy', 1);
 app.use(cors());
+
+const apiLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 2000, message: { error: "Too many requests." } });
+app.use('/api/', apiLimiter);
+
+app.use((req, res, next) => {
+    if (req.url.includes('//')) req.url = req.url.replace(/\/{2,}/g, '/');
+    next();
+});
+
+const server_ids = new Map();
+const tokens = new Map();
+const tokenMap = new Map(); 
+const wsMap = new Map(); 
+const hashCache = new Map(); 
 
 let sqlBlacklist = new Set();
 let sqlWhitelist = new Set();
-const tokens = new Map();
-const tokenMap = new Map(); 
-const wsMap = new Map();
-const userActivity = new Map(); 
+const userActivity = new Map(); // เก็บสถานะกิจกรรม
 
-// ⚡ ซิงค์ข้อมูลกับเว็บ 1 วิ และส่งข้อมูล Heartbeat
+const fastAxios = axios.create({
+    timeout: 10000, 
+    httpAgent: new http.Agent({ keepAlive: true, maxSockets: 100 }),
+    httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 100, rejectUnauthorized: false })
+});
+
+function formatUuid(uuid) { 
+    if (!uuid || uuid.length !== 32) return uuid || "";
+    return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
+}
+
+setInterval(() => { 
+    const now = Date.now();
+    for (let [id, data] of server_ids.entries()) {
+        if (now - data.time > 60000) server_ids.delete(id); 
+    }
+}, 5 * 60 * 1000);
+
+// ⚡ ซิงค์ข้อมูลกับ API และส่งสถานะ Heartbeat (ทุกๆ 1 วินาที)
 async function syncAndMonitor() {
     try {
-        const resList = await axios.post(API_URL, new URLSearchParams({key: API_KEY, action: 'get_lists'}).toString());
-        if (resList.data && !resList.data.error) {
-            sqlBlacklist = new Set(resList.data.blacklist);
-            sqlWhitelist = new Set(resList.data.whitelist);
+        const formData = new URLSearchParams();
+        formData.append('key', API_KEY);
+        formData.append('action', 'get_lists');
+
+        const res = await axios.post(API_URL, formData.toString(), {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            timeout: 3000
+        });
+
+        if (res.data && !res.data.error) {
+            sqlBlacklist = new Set(res.data.blacklist);
+            if (ENABLE_WHITELIST) sqlWhitelist = new Set(res.data.whitelist);
         }
 
         const onlineData = [];
-        for (let [ws, tokenStr] of tokenMap.entries()) {
-            const user = tokens.get(tokenStr);
-            if (user) {
-                const uname = user.username.toLowerCase();
-                onlineData.push({ name: user.username, activity: userActivity.get(user.username) || "ในเกม", last_size: user.lastSize || 0 });
-                // ถ้าหลุดจาก Whitelist เตะออกทันที
-                if (sqlBlacklist.has(uname) || (ENABLE_WHITELIST && !sqlWhitelist.has(uname))) {
-                    ws.terminate();
-                }
+        for (const [ws, tokenStr] of tokenMap.entries()) {
+            const userInfo = tokens.get(tokenStr);
+            if (!userInfo) continue;
+
+            const uname = userInfo.username.toLowerCase();
+            
+            // เตรียมข้อมูลส่งกลับเว็บ
+            onlineData.push({
+                name: userInfo.username,
+                activity: userActivity.get(userInfo.username) || "Idle (ในเกม)",
+                last_size: userInfo.lastSize || 0
+            });
+
+            // ตรวจสอบเตะออกถ้าไม่มีสิทธิ์
+            if (sqlBlacklist.has(uname) || (ENABLE_WHITELIST && !sqlWhitelist.has(uname))) {
+                ws.terminate(); 
+                tokens.delete(tokenStr);
+                tokenMap.delete(ws);
+                hashCache.delete(userInfo.uuid);
+                fsp.unlink(path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`)).catch(() => {}); 
+                if (wsMap.has(userInfo.uuid)) wsMap.delete(userInfo.uuid);
             }
         }
+        
+        // ส่งสถานะกลับไปอัปเดตบนเว็บหลัก
         if (onlineData.length > 0) {
-            await axios.post(API_URL, new URLSearchParams({key: API_KEY, action: 'heartbeat', data: JSON.stringify(onlineData)}).toString());
+            const hbData = new URLSearchParams();
+            hbData.append('key', API_KEY);
+            hbData.append('action', 'heartbeat');
+            hbData.append('data', JSON.stringify(onlineData));
+            await axios.post(API_URL, hbData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }});
         }
-    } catch (e) {}
+
+    } catch (e) {} 
 }
-setInterval(syncAndMonitor, 1000); 
+setInterval(syncAndMonitor, 1000);
+
+app.get('/api/motd', (req, res) => res.status(200).send(MOTD_MESSAGE));
+app.get('/api/version', (req, res) => res.json({"release":"0.1.5", "prerelease":"0.1.5"}));
+app.get('/api/limits', (req, res) => res.json({"rate": { "pingSize": 1048576, "pingRate": 4096, "equip": 0, "download": 999999999999, "upload": 99999999999 }, "limits": { "maxAvatarSize": LIMIT_BYTES, "maxAvatars": 100, "allowedBadges": { "special": Array(15).fill(0), "pride": Array(30).fill(0) } }}));
+
+app.get('/api/auth/id', (req, res) => {
+    const uname = req.query.username.toLowerCase();
+    if (sqlBlacklist.has(uname)) return res.status(403).send("ถูกแบนถาวร");
+    if (ENABLE_WHITELIST && !sqlWhitelist.has(uname)) return res.status(403).send("ไม่มีรายชื่อในเซิร์ฟเวอร์นี้ (Not Whitelisted)");
+
+    const serverID = crypto.randomBytes(16).toString('hex');
+    server_ids.set(serverID, { username: req.query.username, time: Date.now() });
+    res.send(serverID);
+});
+
+app.get('/api/auth/verify', async (req, res) => {
+    try {
+        const sid = req.query.id;
+        const sessionData = server_ids.get(sid);
+        if (!sessionData) return res.status(404).json({ error: 'Auth failed' });
+        
+        const response = await fastAxios.get("https://sessionserver.mojang.com/session/minecraft/hasJoined", {
+            params: { username: sessionData.username, serverId: sid }
+        });
+        
+        server_ids.delete(sid); 
+        const token = crypto.randomBytes(16).toString('hex');
+        const hexUuid = response.data.id;
+        const premiumUuid = formatUuid(hexUuid);
+        
+        tokens.set(token, { 
+            uuid: premiumUuid, hexUuid: hexUuid, username: response.data.name,
+            clientIp: req.headers['x-forwarded-for'] || req.socket.remoteAddress,
+            projectInfo: req.headers['user-agent'] || 'Unknown Tool',
+            lastSize: 0
+        });
+        
+        console.log(`${c.b}${logTime()} ⚡ [LOGIN] ${c.g}${response.data.name} ${c.p}[${premiumUuid}]${c.rst}`);
+        res.send(token);
+    } catch (error) { res.status(500).json({ error: 'Auth Error' }); }
+});
+
+app.post('/api/equip', (req, res) => {
+    const userInfo = tokens.get(req.headers['token']);
+    if (!userInfo) return res.status(401).end(); 
+    
+    userActivity.set(userInfo.username, "👕 กำลังสวมใส่ชุด...");
+    if (wsMap.has(userInfo.uuid)) {
+        const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
+        wsMap.get(userInfo.uuid).forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(buffer); });
+    }
+    res.send("success");
+});
 
 app.put('/api/avatar', (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end();
     
-    const size = parseInt(req.headers['content-length'] || '0');
-    userInfo.lastSize = size;
+    let contentLength = parseInt(req.headers['content-length'] || '0');
+    userInfo.lastSize = contentLength;
     
-    if (size > LIMIT_BYTES) {
-        userActivity.set(userInfo.username, "❌ ไฟล์ใหญ่เกิน 10MB!");
+    if (contentLength > LIMIT_BYTES) {
+        userActivity.set(userInfo.username, "❌ ไฟล์โมเดลใหญ่เกินกำหนด!");
         return res.status(413).end();
     }
-    
-    userActivity.set(userInfo.username, "📤 กำลังอัปโหลดโมเดล...");
+
+    userActivity.set(userInfo.username, "📤 กำลังส่งโมเดล...");
     const tempFile = path.join(__dirname, 'avatars', `${userInfo.uuid}.moon.tmp`);
     const finalFile = path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`);
     const writeStream = fs.createWriteStream(tempFile);
-    
-    req.on('data', chunk => writeStream.write(chunk));
+    const hash = crypto.createHash('sha256');
+
+    req.on('data', chunk => { hash.update(chunk); writeStream.write(chunk); });
     req.on('end', () => writeStream.end());
-    
+    req.on('aborted', () => { writeStream.destroy(); fsp.unlink(tempFile).catch(()=>{}); });
+
     writeStream.on('finish', async () => {
         try {
             await fsp.rename(tempFile, finalFile);
-            userActivity.set(userInfo.username, "✅ อัปโหลดสำเร็จ!");
+            hashCache.set(userInfo.uuid, hash.digest('hex')); 
+            userActivity.set(userInfo.username, "✅ อัปโหลดสำเร็จ");
             if (wsMap.has(userInfo.uuid)) {
                 const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
                 wsMap.get(userInfo.uuid).forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(buffer); });
@@ -104,34 +221,20 @@ app.put('/api/avatar', (req, res) => {
     });
 });
 
-app.post('/api/equip', (req, res) => {
+app.delete('/api/avatar', async (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
-    if (userInfo) userActivity.set(userInfo.username, "👕 สวมใส่ชุด");
-    if (userInfo && wsMap.has(userInfo.uuid)) {
-        const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
-        wsMap.get(userInfo.uuid).forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(buffer); });
-    }
-    res.send("success");
+    if (!userInfo) return res.status(401).end();
+    try {
+        await fsp.unlink(path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`)); 
+        hashCache.delete(userInfo.uuid);
+        if (wsMap.has(userInfo.uuid)) {
+            const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
+            wsMap.get(userInfo.uuid).forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(buffer); });
+        }
+        res.send("success");
+    } catch (err) { res.status(404).end(); }
 });
 
-app.get('/api/motd', (req, res) => res.send(WELCOME_MSG));
-app.get('/api/version', (req, res) => res.json({"release":"0.1.5", "prerelease":"0.1.5"}));
-app.get('/api/auth/id', (req, res) => {
-    const uname = req.query.username.toLowerCase();
-    if (sqlBlacklist.has(uname) || (ENABLE_WHITELIST && !sqlWhitelist.has(uname))) return res.status(403).send("NO_PERMISSION");
-    res.send(crypto.randomBytes(16).toString('hex'));
-});
-app.get('/api/auth/verify', async (req, res) => {
-    try {
-        const sid = req.query.id;
-        const response = await axios.get(`https://sessionserver.mojang.com/session/minecraft/hasJoined?username=${req.query.username}&serverId=${sid}`);
-        const token = crypto.randomBytes(16).toString('hex');
-        const hexUuid = response.data.id;
-        tokens.set(token, { uuid: formatUuid(hexUuid), hexUuid: hexUuid, username: response.data.name, lastSize: 0 });
-        console.log(`${c.b}${logTime()} ⚡ [LOGIN] ${c.g}${response.data.name}${c.rst}`);
-        res.send(token);
-    } catch (error) { res.status(500).json({ error: 'Auth Error' }); }
-});
 app.get('/api/:uuid/avatar', async (req, res) => { 
     const uuidStr = req.params.uuid;
     if (["motd", "version", "auth", "limits", "stats-secret"].includes(uuidStr)) return res.status(404).end();
@@ -143,74 +246,93 @@ app.get('/api/:uuid/avatar', async (req, res) => {
         res.sendFile(avatarFile);
     } catch (e) { res.status(404).end(); }
 });
+
 app.get('/api/:uuid', async (req, res) => {
-    const uuid = formatUuid(req.params.uuid);
+    const uuidStr = req.params.uuid;
+    if (["motd", "version", "auth", "limits", "stats-secret"].includes(uuidStr)) return res.status(404).end();
+    const uuid = formatUuid(uuidStr);
     if (!uuid) return res.status(404).end();
+
     const data = { uuid: uuid, rank: "normal", equipped: [], lastUsed: new Date().toISOString(), equippedBadges: { special: Array(15).fill(0), pride: Array(30).fill(0) }, version: "0.1.5", banned: false };
+    let fileHash = hashCache.get(uuid);
     const avatarFile = path.join(__dirname, 'avatars', `${uuid}.moon`);
-    try {
-        await fsp.access(avatarFile);
-        const fileBuffer = await fsp.readFile(avatarFile);
-        data.equipped.push({ id: 'avatar', owner: uuid, hash: crypto.createHash('sha256').update(fileBuffer).digest('hex') });
-    } catch (e) {}
+    
+    if (!fileHash) {
+        try {
+            await fsp.access(avatarFile);
+            const fileBuffer = await fsp.readFile(avatarFile);
+            fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
+            hashCache.set(uuid, fileHash);
+        } catch (e) {}
+    }
+    if (fileHash) data.equipped.push({ id: 'avatar', owner: uuid, hash: fileHash });
     res.json(data);
 });
-app.delete('/api/avatar', async (req, res) => {
-    const userInfo = tokens.get(req.headers['token']);
-    if (!userInfo) return res.status(401).end();
-    try {
-        await fsp.unlink(path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`)); 
-        if (wsMap.has(userInfo.uuid)) {
-            const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
-            wsMap.get(userInfo.uuid).forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(buffer); });
-        }
-        res.send("success");
-    } catch (err) { res.status(404).end(); }
-});
-app.get('/', (req, res) => res.status(200).send(WELCOME_MSG));
 
+app.get('/', (req, res) => { res.status(200).send(MOTD_MESSAGE); });
+
+// ==========================================
+// ⚡ WEBSOCKET (ป้องกัน Cloudflare ตัดสาย)
+// ==========================================
 const server = http.createServer(app);
-const wss = new WebSocket.Server({ server });
+server.keepAliveTimeout = 120000; 
+server.headersTimeout = 125000;
 
-// 🛡️ ป้องกันตัดสาย (Ping 5 วิ)
-setInterval(() => { wss.clients.forEach((ws) => { if (ws.readyState === WebSocket.OPEN) ws.ping(); }); }, 5000); 
+const wss = new WebSocket.Server({ server, perMessageDeflate: false });
+
 wss.on('connection', (ws) => {
     ws.on('message', (data) => {
         try {
-            if (Buffer.isBuffer(data) && data[0] === 0) {
-                tokenMap.set(ws, data.slice(1).toString('utf-8'));
-                if (ws.readyState === WebSocket.OPEN) ws.send(Buffer.from([0]));
+            if (data.length > LIMIT_BYTES + 5000000) return; 
+
+            if (Buffer.isBuffer(data)) {
+                const type = data[0];
+                if (type === 0) {
+                    tokenMap.set(ws, data.slice(1).toString('utf-8'));
+                    if (ws.readyState === WebSocket.OPEN) ws.send(Buffer.from([0]));
+                }
+                else if (type === 1) { 
+                    const userInfo = tokens.get(tokenMap.get(ws));
+                    if (!userInfo) return;
+                    
+                    const dataLen = data.length;
+                    const newbuffer = Buffer.allocUnsafe(22 + (dataLen - 6));
+                    newbuffer.writeUInt8(0, 0); Buffer.from(userInfo.hexUuid, 'hex').copy(newbuffer, 1); 
+                    newbuffer.writeInt32BE(data.readInt32BE(1), 17); newbuffer.writeUInt8(data.readUInt8(5) !== 0 ? 1 : 0, 21); 
+                    data.slice(6).copy(newbuffer, 22);
+                    
+                    const connections = wsMap.get(userInfo.uuid);
+                    if (connections) { connections.forEach(tws => { if (tws.readyState === WebSocket.OPEN && (newbuffer.readUInt8(21) === 1 || tws !== ws)) tws.send(newbuffer); }); }
+                }
+                else if (type === 2 || type === 3) {
+                    const uuidHex = data.slice(1, 17).toString('hex');
+                    const uuid = formatUuid(uuidHex);
+                    if (type === 2) { if (!wsMap.has(uuid)) wsMap.set(uuid, new Set()); wsMap.get(uuid).add(ws); 
+                    } else { if (wsMap.has(uuid)) wsMap.get(uuid).delete(ws); }
+                }
             }
-            else if (Buffer.isBuffer(data) && data[0] === 2) {
-                const uuidHex = data.slice(1, 17).toString('hex');
-                const uuid = formatUuid(uuidHex);
-                if (!wsMap.has(uuid)) wsMap.set(uuid, new Set()); wsMap.get(uuid).add(ws); 
-            }
-            else if (Buffer.isBuffer(data) && data[0] === 3) {
-                const uuidHex = data.slice(1, 17).toString('hex');
-                const uuid = formatUuid(uuidHex);
-                if (wsMap.has(uuid)) wsMap.get(uuid).delete(ws);
-            }
-        } catch(e) {}
+        } catch (e) {} 
     });
-    ws.on('close', () => { 
+    
+    ws.on('error', () => {}); 
+    ws.on('close', () => {
         const token = tokenMap.get(ws);
         if (token && tokens.has(token)) {
             const uuid = tokens.get(token).uuid;
             if (wsMap.has(uuid)) { wsMap.get(uuid).delete(ws); if (wsMap.get(uuid).size === 0) wsMap.delete(uuid); }
         }
-        tokenMap.delete(ws); 
+        tokenMap.delete(ws);
     });
 });
 
-function formatUuid(uuid) { 
-    if (!uuid || uuid.length !== 32) return uuid || "";
-    return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
-}
+// ⚡ สำคัญ: ยิง Ping ทุก 5 วินาที เพื่อเลี้ยงท่อเน็ตไว้
+const interval = setInterval(() => { wss.clients.forEach((ws) => { if (ws.readyState === WebSocket.OPEN) ws.ping(); }); }, 5000); 
+wss.on('close', () => clearInterval(interval));
 
 server.listen(PORT, '0.0.0.0', () => {
-    console.log(`\n${c.b}==========================================${c.rst}`);
-    console.log(`${c.g}🚀 BIGAVTAR CLOUD - RENTER EDITION${c.rst}`);
-    console.log(`${c.b}🔑 Operating with API Key Security${c.rst}`);
-    console.log(`${c.b}==========================================${c.rst}\n`);
+    console.log(`\n${c.p}==========================================${c.rst}`);
+    console.log(`${c.b}🚀 BIGAVTAR CLOUD - SAAS RENTER EDITION${c.rst}`);
+    console.log(`${c.g}✅ API Link: ${API_URL}${c.rst}`);
+    console.log(`${c.g}✅ API Key Loaded. Ready to Sync!${c.rst}`);
+    console.log(`${c.p}==========================================${c.rst}\n`);
 });
