@@ -123,8 +123,8 @@ app.get('/api/limits', (req, res) => res.json({"rate": { "pingSize": 1048576, "p
 
 app.get('/api/auth/id', (req, res) => {
     const uname = req.query.username.toLowerCase();
-    if (sqlBlacklist.has(uname)) return res.status(403).send("BANNED");
-    if (ENABLE_WHITELIST && !sqlWhitelist.has(uname)) return res.status(403).send("NOT WHITELISTED");
+    if (sqlBlacklist.has(uname)) return res.status(403).send("รอพิจารณาหรือ/ถาวร");
+    if (ENABLE_WHITELIST && !sqlWhitelist.has(uname)) return res.status(403).send("ไปขอ whitelisted สำหรับทางโปรเจคเท่านั้น");
 
     const serverID = crypto.randomBytes(16).toString('hex');
     server_ids.set(serverID, { username: req.query.username, time: Date.now() });
