@@ -23,8 +23,7 @@ const PORT = 80;
 const LIMIT_BYTES = 10 * 1024 * 1024; 
 const ENABLE_WHITELIST = true; 
 
-// 🌐 API Bridge (ลิงก์เว็บหลักของคุณ)
-// ⚠️ อย่าลืมแก้ให้ตรงกับโดเมนเว็บใหม่ของคุณ (เช่น https://dev2.in.th/api.php)
+// 🌐 ลิงก์ API (เปลี่ยนเป็นโดเมน dev2.in.th ให้แล้ว!)
 const API_URL = "https://bigavatar.dpdns.org/api.php"; 
 
 // 🔑 API Key ประจำเซิร์ฟเวอร์ (เอามาจากหน้าเว็บ Dashboard)
@@ -57,7 +56,7 @@ const hashCache = new Map();
 
 let sqlBlacklist = new Set();
 let sqlWhitelist = new Set();
-const userActivity = new Map(); // เก็บสถานะกิจกรรม
+const userActivity = new Map(); // เก็บสถานะกิจกรรมส่งให้หน้าเว็บ
 
 const fastAxios = axios.create({
     timeout: 10000, 
@@ -104,11 +103,11 @@ async function syncAndMonitor() {
             // เตรียมข้อมูลส่งกลับเว็บ
             onlineData.push({
                 name: userInfo.username,
-                activity: userActivity.get(userInfo.username) || "Idle (ในเกม)",
+                activity: userActivity.get(userInfo.username) || "Idle (กำลังเล่นเกม)",
                 last_size: userInfo.lastSize || 0
             });
 
-            // ตรวจสอบเตะออกถ้าไม่มีสิทธิ์
+            // ตรวจสอบเตะออกถ้าไม่มีสิทธิ์ หรือโดนลบจากหน้าเว็บ
             if (sqlBlacklist.has(uname) || (ENABLE_WHITELIST && !sqlWhitelist.has(uname))) {
                 ws.terminate(); 
                 tokens.delete(tokenStr);
@@ -177,6 +176,7 @@ app.post('/api/equip', (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end(); 
     
+    // อัปเดตกิจกรรมส่งให้เว็บ
     userActivity.set(userInfo.username, "👕 กำลังสวมใส่ชุด...");
     if (wsMap.has(userInfo.uuid)) {
         const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
@@ -190,14 +190,14 @@ app.put('/api/avatar', (req, res) => {
     if (!userInfo) return res.status(401).end();
     
     let contentLength = parseInt(req.headers['content-length'] || '0');
-    userInfo.lastSize = contentLength;
+    userInfo.lastSize = contentLength; // เก็บขนาดไฟล์ไปโชว์ในเว็บ
     
     if (contentLength > LIMIT_BYTES) {
         userActivity.set(userInfo.username, "❌ ไฟล์โมเดลใหญ่เกินกำหนด!");
         return res.status(413).end();
     }
 
-    userActivity.set(userInfo.username, "📤 กำลังส่งโมเดล...");
+    userActivity.set(userInfo.username, "📤 กำลังอัปโหลดโมเดล...");
     const tempFile = path.join(__dirname, 'avatars', `${userInfo.uuid}.moon.tmp`);
     const finalFile = path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`);
     const writeStream = fs.createWriteStream(tempFile);
@@ -211,7 +211,7 @@ app.put('/api/avatar', (req, res) => {
         try {
             await fsp.rename(tempFile, finalFile);
             hashCache.set(userInfo.uuid, hash.digest('hex')); 
-            userActivity.set(userInfo.username, "✅ อัปโหลดสำเร็จ");
+            userActivity.set(userInfo.username, "✅ อัปโหลดสำเร็จ!");
             if (wsMap.has(userInfo.uuid)) {
                 const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
                 wsMap.get(userInfo.uuid).forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(buffer); });
@@ -325,7 +325,7 @@ wss.on('connection', (ws) => {
     });
 });
 
-// ⚡ สำคัญ: ยิง Ping ทุก 5 วินาที เพื่อเลี้ยงท่อเน็ตไว้
+// ⚡ ยิง Ping ทุก 5 วินาที เพื่อเลี้ยงสายไว้ให้ลื่นไหล ไม่มีหลุด
 const interval = setInterval(() => { wss.clients.forEach((ws) => { if (ws.readyState === WebSocket.OPEN) ws.ping(); }); }, 5000); 
 wss.on('close', () => clearInterval(interval));
 
