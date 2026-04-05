@@ -28,7 +28,7 @@ const ENABLE_WHITELIST = true;
 const API_URL = "https://bigavatar.dpdns.org/api.php"; 
 
 // 🔑 API Key ประจำเซิร์ฟเวอร์ (เอามาจากหน้าเว็บ Dashboard)
-const API_KEY = "เอา_API_KEY_จากหน้าเว็บมาใส่ตรงนี้ครับ"; 
+const API_KEY = "8f5619fad84f8aae15c3b147a90e673b"; 
 
 // 🌟 ข้อความหลัก (MOTD & Welcome Message)
 const MOTD_MESSAGE = "§b§lขอขอบคุณที่ใช้บริการนะคับ §f§l- §a§lดูรายละเอียดเพิ่มเติมได้ที่: §e§nhttps://dash.faydar.eu.cc";
