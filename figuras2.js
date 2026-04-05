@@ -15,18 +15,21 @@ process.on('uncaughtException', (err) => {});
 process.on('unhandledRejection', (reason) => {});
 
 // ==========================================
-// ⚙️ การตั้งค่าเซิร์ฟเวอร์ผู้เช่า (RENTER CONFIG)
+// ⚙️ การตั้งค่าเซิร์ฟเวอร์ (นำไปรันบน IP ผู้เช่า)
 // ==========================================
 const PORT = 80; 
+
+// 🌐 ลิงก์เชื่อมโยงไปยังเว็บหลักของคุณ (ตรวจสอบให้ตรงกับเว็บปัจจุบัน)
 const API_URL = "https://bigavatar.dpdns.org/api.php"; 
-const API_KEY = "8f5619fad84f8aae15c3b147a90e673b"; // <--- 🔑 ผู้เช่าต้องเอาคีย์มาใส่ตรงนี้
+
+// 🔑 นำ API Key จากหน้าแดชบอร์ดมาใส่ที่นี่ (แจกให้ผู้เช่าแต่ละคนไม่เหมือนกัน)
+const API_KEY = "ใส่_API_KEY_จากหน้าเว็บที่นี่ครับ"; 
+
 const ENABLE_WHITELIST = true; 
 const LIMIT_BYTES = 10 * 1024 * 1024; 
-
-// 🌟 ข้อความ MOTD
 const WELCOME_MSG = "§b§lขอขอบคุณที่ใช้บริการนะคับ §f§l- §a§lดูรายละเอียดเพิ่มเติมได้ที่: §e§nhttps://dash.faydar.eu.cc";
-
 // ==========================================
+
 const avatarsDir = path.join(__dirname, "avatars");
 if (!fs.existsSync(avatarsDir)) fs.mkdirSync(avatarsDir);
 
@@ -55,7 +58,10 @@ async function syncAndMonitor() {
             if (user) {
                 const uname = user.username.toLowerCase();
                 onlineData.push({ name: user.username, activity: userActivity.get(user.username) || "ในเกม", last_size: user.lastSize || 0 });
-                if (sqlBlacklist.has(uname) || (ENABLE_WHITELIST && !sqlWhitelist.has(uname))) ws.terminate();
+                // ถ้าหลุดจาก Whitelist เตะออกทันที
+                if (sqlBlacklist.has(uname) || (ENABLE_WHITELIST && !sqlWhitelist.has(uname))) {
+                    ws.terminate();
+                }
             }
         }
         if (onlineData.length > 0) {
@@ -166,7 +172,7 @@ app.get('/', (req, res) => res.status(200).send(WELCOME_MSG));
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
-// 🛡️ ยิง Ping 5 วิ ป้องกันหลุด
+// 🛡️ ป้องกันตัดสาย (Ping 5 วิ)
 setInterval(() => { wss.clients.forEach((ws) => { if (ws.readyState === WebSocket.OPEN) ws.ping(); }); }, 5000); 
 wss.on('connection', (ws) => {
     ws.on('message', (data) => {
