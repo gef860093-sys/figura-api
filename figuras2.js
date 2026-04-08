@@ -20,7 +20,7 @@ process.on('unhandledRejection', (reason) => {});
 // ⚙️ การตั้งค่าสำหรับเซิร์ฟเวอร์ผู้เช่า (RENTER CONFIG)
 // ==========================================
 const PORT = 80; 
-const LIMIT_BYTES = 10 * 1024 * 1024; 
+const LIMIT_BYTES = 11 * 1024 * 1024; 
 const ENABLE_WHITELIST = true; 
 
 // 🌐 ลิงก์ API (เปลี่ยนเป็นโดเมน dev2.in.th ให้แล้ว!)
