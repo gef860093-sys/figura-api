@@ -20,16 +20,16 @@ process.on('unhandledRejection', (reason) => {});
 // ⚙️ การตั้งค่าสำหรับเซิร์ฟเวอร์ผู้เช่า (RENTER CONFIG)
 // ==========================================
 const PORT = 80; 
-const LIMIT_BYTES = 11 * 1024 * 1024; 
+const LIMIT_BYTES = 10 * 1024 * 1024; 
 const ENABLE_WHITELIST = true; 
 
-// 🌐 ลิงก์ API (เปลี่ยนเป็นโดเมน dev2.in.th ให้แล้ว!)
+// 🌐 API Bridge (ชี้ไปที่โดเมนใหม่ของคุณ)
 const API_URL = "https://bigavatar.dpdns.org/api.php"; 
 
-// 🔑 API Key ประจำเซิร์ฟเวอร์ (เอามาจากหน้าเว็บ Dashboard)
+// 🔑 API Key ของเซิร์ฟเวอร์นี้
 const API_KEY = "8f5619fad84f8aae15c3b147a90e673b"; 
 
-// 🌟 ข้อความหลัก (MOTD & Welcome Message)
+// 🌟 ข้อความ MOTD
 const MOTD_MESSAGE = "§b§lขอขอบคุณที่ใช้บริการนะคับ §f§l- §a§lดูรายละเอียดเพิ่มเติมได้ที่: §e§nhttps://dash.faydar.eu.cc";
 // ==========================================
 
@@ -56,7 +56,7 @@ const hashCache = new Map();
 
 let sqlBlacklist = new Set();
 let sqlWhitelist = new Set();
-const userActivity = new Map(); // เก็บสถานะกิจกรรมส่งให้หน้าเว็บ
+const userActivity = new Map(); 
 
 const fastAxios = axios.create({
     timeout: 10000, 
@@ -103,11 +103,11 @@ async function syncAndMonitor() {
             // เตรียมข้อมูลส่งกลับเว็บ
             onlineData.push({
                 name: userInfo.username,
-                activity: userActivity.get(userInfo.username) || "Idle (กำลังเล่นเกม)",
+                activity: userActivity.get(userInfo.username) || "Idle (ออนไลน์)",
                 last_size: userInfo.lastSize || 0
             });
 
-            // ตรวจสอบเตะออกถ้าไม่มีสิทธิ์ หรือโดนลบจากหน้าเว็บ
+            // ตรวจสอบเตะออกถ้าไม่มีสิทธิ์
             if (sqlBlacklist.has(uname) || (ENABLE_WHITELIST && !sqlWhitelist.has(uname))) {
                 ws.terminate(); 
                 tokens.delete(tokenStr);
@@ -176,7 +176,6 @@ app.post('/api/equip', (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end(); 
     
-    // อัปเดตกิจกรรมส่งให้เว็บ
     userActivity.set(userInfo.username, "👕 กำลังสวมใส่ชุด...");
     if (wsMap.has(userInfo.uuid)) {
         const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
@@ -190,7 +189,7 @@ app.put('/api/avatar', (req, res) => {
     if (!userInfo) return res.status(401).end();
     
     let contentLength = parseInt(req.headers['content-length'] || '0');
-    userInfo.lastSize = contentLength; // เก็บขนาดไฟล์ไปโชว์ในเว็บ
+    userInfo.lastSize = contentLength;
     
     if (contentLength > LIMIT_BYTES) {
         userActivity.set(userInfo.username, "❌ ไฟล์โมเดลใหญ่เกินกำหนด!");
@@ -211,7 +210,7 @@ app.put('/api/avatar', (req, res) => {
         try {
             await fsp.rename(tempFile, finalFile);
             hashCache.set(userInfo.uuid, hash.digest('hex')); 
-            userActivity.set(userInfo.username, "✅ อัปโหลดสำเร็จ!");
+            userActivity.set(userInfo.username, "✅ อัปโหลดสำเร็จ");
             if (wsMap.has(userInfo.uuid)) {
                 const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
                 wsMap.get(userInfo.uuid).forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(buffer); });
@@ -272,7 +271,7 @@ app.get('/api/:uuid', async (req, res) => {
 app.get('/', (req, res) => { res.status(200).send(MOTD_MESSAGE); });
 
 // ==========================================
-// ⚡ WEBSOCKET (ป้องกัน Cloudflare ตัดสาย)
+// ⚡ WEBSOCKET (ป้องกันเกมและเน็ตตัดสาย)
 // ==========================================
 const server = http.createServer(app);
 server.keepAliveTimeout = 120000; 
@@ -325,7 +324,7 @@ wss.on('connection', (ws) => {
     });
 });
 
-// ⚡ ยิง Ping ทุก 5 วินาที เพื่อเลี้ยงสายไว้ให้ลื่นไหล ไม่มีหลุด
+// ⚡ สำคัญ: ยิง Ping ทุก 5 วินาที เพื่อเลี้ยงท่อเน็ตไว้ ไม่ให้หลุด
 const interval = setInterval(() => { wss.clients.forEach((ws) => { if (ws.readyState === WebSocket.OPEN) ws.ping(); }); }, 5000); 
 wss.on('close', () => clearInterval(interval));
 
