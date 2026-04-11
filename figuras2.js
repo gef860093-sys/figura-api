@@ -13,20 +13,20 @@ const rateLimit = require('express-rate-limit');
 const c = { g: '\x1b[32m', b: '\x1b[36m', y: '\x1b[33m', r: '\x1b[31m', p: '\x1b[35m', rst: '\x1b[0m' };
 const logTime = () => `[${new Date().toLocaleTimeString('th-TH')}]`;
 
-process.on('uncaughtException', (err) => { console.log(`${c.r}[Error] ${err.message}${c.rst}`); });
+process.on('uncaughtException', (err) => {});
 process.on('unhandledRejection', (reason) => {});
 
 // ==========================================
-// ⚙️ การตั้งค่าสำหรับเซิร์ฟเวอร์ผู้เช่า (RENTER CONFIG)
+// ⚙️ การตั้งค่าสำหรับผู้เช่า (RENTER CONFIG)
 // ==========================================
 const PORT = 80; 
 const LIMIT_BYTES = 10 * 1024 * 1024; 
 const ENABLE_WHITELIST = true; 
 
-// 🌐 API Bridge (ลิงก์เว็บหลักของคุณ)
+// 🌐 API Bridge (ลิงก์ชี้ไปที่โดเมนของคุณ)
 const API_URL = "https://bigavatar.dpdns.org/api.php"; 
 
-// 🔑 API Key (นำจากหน้าเว็บมากด Copy ใส่)
+// 🔑 API Key (ก็อปจากหน้าแดชบอร์ดมาใส่)
 const API_KEY = "8f5619fad84f8aae15c3b147a90e673b"; 
 
 const MOTD_MESSAGE = "§b§lขอขอบคุณที่ใช้บริการนะคับ §f§l- §a§lดูรายละเอียดเพิ่มเติมได้ที่: §e§nhttps://dash.faydar.eu.cc";
@@ -54,7 +54,7 @@ let sqlWhitelist = new Set();
 const userActivity = new Map(); 
 
 const fastAxios = axios.create({
-    timeout: 5000, // ลด Timeout เพื่อไม่ให้ค้าง
+    timeout: 5000, 
     httpAgent: new http.Agent({ keepAlive: true, maxSockets: 100 }),
     httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 100, rejectUnauthorized: false })
 });
@@ -64,7 +64,7 @@ function formatUuid(uuid) {
     return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
 }
 
-// 🧹 เคลียร์ Memory ที่ไม่ได้ใช้ทุก 5 นาที
+// 🧹 เคลียร์ Memory เซสชั่นที่ค้าง
 setInterval(() => { 
     const now = Date.now();
     for (let [id, data] of server_ids.entries()) {
@@ -72,14 +72,13 @@ setInterval(() => {
     }
 }, 5 * 60 * 1000);
 
-// ⚡ ซิงค์ข้อมูลกับ API อย่างแข็งแกร่ง (ต่อให้ API พัง เกมก็ไม่ค้าง)
+// ⚡ ซิงค์ข้อมูลกับเว็บ 
 async function syncAndMonitor() {
     try {
         const formData = new URLSearchParams();
         formData.append('key', API_KEY);
         formData.append('action', 'get_lists');
 
-        // ใช้ fastAxios ที่มี timeout กันค้าง
         const res = await fastAxios.post(API_URL, formData.toString(), {
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
         });
@@ -98,11 +97,10 @@ async function syncAndMonitor() {
             
             onlineData.push({
                 name: userInfo.username,
-                activity: userActivity.get(userInfo.username) || "Idle (ในเกม)",
+                activity: userActivity.get(userInfo.username) || "Idle (ออนไลน์)",
                 last_size: userInfo.lastSize || 0
             });
 
-            // ตรวจสอบสิทธิ์แบบ Real-time
             if (sqlBlacklist.has(uname) || (ENABLE_WHITELIST && !sqlWhitelist.has(uname))) {
                 ws.terminate(); 
                 tokens.delete(tokenStr);
@@ -121,11 +119,9 @@ async function syncAndMonitor() {
             fastAxios.post(API_URL, hbData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }}).catch(()=>{});
         }
 
-    } catch (e) {
-        // 🛡️ ถ้าระบบเว็บดาวน์ จะแอบข้ามไปเงียบๆ เพื่อให้คนที่อยู่ในเกมยังเล่นต่อได้
-    } 
+    } catch (e) {} 
 }
-setInterval(syncAndMonitor, 2000); // อัปเดตทุก 2 วิเพื่อลดภาระ Web Host
+setInterval(syncAndMonitor, 2000); 
 
 app.get('/api/motd', (req, res) => res.status(200).send(MOTD_MESSAGE));
 app.get('/api/version', (req, res) => res.json({"release":"0.1.5", "prerelease":"0.1.5"}));
