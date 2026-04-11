@@ -13,7 +13,7 @@ const rateLimit = require('express-rate-limit');
 const c = { g: '\x1b[32m', b: '\x1b[36m', y: '\x1b[33m', r: '\x1b[31m', p: '\x1b[35m', rst: '\x1b[0m' };
 const logTime = () => `[${new Date().toLocaleTimeString('th-TH')}]`;
 
-process.on('uncaughtException', (err) => {});
+process.on('uncaughtException', (err) => { console.log(`${c.r}[Error] ${err.message}${c.rst}`); });
 process.on('unhandledRejection', (reason) => {});
 
 // ==========================================
@@ -23,13 +23,12 @@ const PORT = 80;
 const LIMIT_BYTES = 10 * 1024 * 1024; 
 const ENABLE_WHITELIST = true; 
 
-// 🌐 API Bridge (ชี้ไปที่โดเมนใหม่ของคุณ)
+// 🌐 API Bridge (ลิงก์เว็บหลักของคุณ)
 const API_URL = "https://bigavatar.dpdns.org/api.php"; 
 
-// 🔑 API Key ของเซิร์ฟเวอร์นี้
+// 🔑 API Key (นำจากหน้าเว็บมากด Copy ใส่)
 const API_KEY = "8f5619fad84f8aae15c3b147a90e673b"; 
 
-// 🌟 ข้อความ MOTD
 const MOTD_MESSAGE = "§b§lขอขอบคุณที่ใช้บริการนะคับ §f§l- §a§lดูรายละเอียดเพิ่มเติมได้ที่: §e§nhttps://dash.faydar.eu.cc";
 // ==========================================
 
@@ -42,11 +41,7 @@ app.use(cors());
 
 const apiLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 2000, message: { error: "Too many requests." } });
 app.use('/api/', apiLimiter);
-
-app.use((req, res, next) => {
-    if (req.url.includes('//')) req.url = req.url.replace(/\/{2,}/g, '/');
-    next();
-});
+app.use((req, res, next) => { if (req.url.includes('//')) req.url = req.url.replace(/\/{2,}/g, '/'); next(); });
 
 const server_ids = new Map();
 const tokens = new Map();
@@ -59,7 +54,7 @@ let sqlWhitelist = new Set();
 const userActivity = new Map(); 
 
 const fastAxios = axios.create({
-    timeout: 10000, 
+    timeout: 5000, // ลด Timeout เพื่อไม่ให้ค้าง
     httpAgent: new http.Agent({ keepAlive: true, maxSockets: 100 }),
     httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 100, rejectUnauthorized: false })
 });
@@ -69,6 +64,7 @@ function formatUuid(uuid) {
     return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
 }
 
+// 🧹 เคลียร์ Memory ที่ไม่ได้ใช้ทุก 5 นาที
 setInterval(() => { 
     const now = Date.now();
     for (let [id, data] of server_ids.entries()) {
@@ -76,16 +72,16 @@ setInterval(() => {
     }
 }, 5 * 60 * 1000);
 
-// ⚡ ซิงค์ข้อมูลกับ API และส่งสถานะ Heartbeat (ทุกๆ 1 วินาที)
+// ⚡ ซิงค์ข้อมูลกับ API อย่างแข็งแกร่ง (ต่อให้ API พัง เกมก็ไม่ค้าง)
 async function syncAndMonitor() {
     try {
         const formData = new URLSearchParams();
         formData.append('key', API_KEY);
         formData.append('action', 'get_lists');
 
-        const res = await axios.post(API_URL, formData.toString(), {
-            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-            timeout: 3000
+        // ใช้ fastAxios ที่มี timeout กันค้าง
+        const res = await fastAxios.post(API_URL, formData.toString(), {
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' }
         });
 
         if (res.data && !res.data.error) {
@@ -100,14 +96,13 @@ async function syncAndMonitor() {
 
             const uname = userInfo.username.toLowerCase();
             
-            // เตรียมข้อมูลส่งกลับเว็บ
             onlineData.push({
                 name: userInfo.username,
-                activity: userActivity.get(userInfo.username) || "Idle (ออนไลน์)",
+                activity: userActivity.get(userInfo.username) || "Idle (ในเกม)",
                 last_size: userInfo.lastSize || 0
             });
 
-            // ตรวจสอบเตะออกถ้าไม่มีสิทธิ์
+            // ตรวจสอบสิทธิ์แบบ Real-time
             if (sqlBlacklist.has(uname) || (ENABLE_WHITELIST && !sqlWhitelist.has(uname))) {
                 ws.terminate(); 
                 tokens.delete(tokenStr);
@@ -118,18 +113,19 @@ async function syncAndMonitor() {
             }
         }
         
-        // ส่งสถานะกลับไปอัปเดตบนเว็บหลัก
         if (onlineData.length > 0) {
             const hbData = new URLSearchParams();
             hbData.append('key', API_KEY);
             hbData.append('action', 'heartbeat');
             hbData.append('data', JSON.stringify(onlineData));
-            await axios.post(API_URL, hbData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }});
+            fastAxios.post(API_URL, hbData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }}).catch(()=>{});
         }
 
-    } catch (e) {} 
+    } catch (e) {
+        // 🛡️ ถ้าระบบเว็บดาวน์ จะแอบข้ามไปเงียบๆ เพื่อให้คนที่อยู่ในเกมยังเล่นต่อได้
+    } 
 }
-setInterval(syncAndMonitor, 1000);
+setInterval(syncAndMonitor, 2000); // อัปเดตทุก 2 วิเพื่อลดภาระ Web Host
 
 app.get('/api/motd', (req, res) => res.status(200).send(MOTD_MESSAGE));
 app.get('/api/version', (req, res) => res.json({"release":"0.1.5", "prerelease":"0.1.5"}));
@@ -151,7 +147,7 @@ app.get('/api/auth/verify', async (req, res) => {
         const sessionData = server_ids.get(sid);
         if (!sessionData) return res.status(404).json({ error: 'Auth failed' });
         
-        const response = await fastAxios.get("https://sessionserver.mojang.com/session/minecraft/hasJoined", {
+        const response = await axios.get("https://sessionserver.mojang.com/session/minecraft/hasJoined", {
             params: { username: sessionData.username, serverId: sid }
         });
         
@@ -210,7 +206,7 @@ app.put('/api/avatar', (req, res) => {
         try {
             await fsp.rename(tempFile, finalFile);
             hashCache.set(userInfo.uuid, hash.digest('hex')); 
-            userActivity.set(userInfo.username, "✅ อัปโหลดสำเร็จ");
+            userActivity.set(userInfo.username, "✅ อัปโหลดสำเร็จ!");
             if (wsMap.has(userInfo.uuid)) {
                 const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
                 wsMap.get(userInfo.uuid).forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(buffer); });
@@ -271,7 +267,7 @@ app.get('/api/:uuid', async (req, res) => {
 app.get('/', (req, res) => { res.status(200).send(MOTD_MESSAGE); });
 
 // ==========================================
-// ⚡ WEBSOCKET (ป้องกันเกมและเน็ตตัดสาย)
+// ⚡ WEBSOCKET (ระบบ Anti-Drop สมบูรณ์แบบ)
 // ==========================================
 const server = http.createServer(app);
 server.keepAliveTimeout = 120000; 
@@ -324,14 +320,14 @@ wss.on('connection', (ws) => {
     });
 });
 
-// ⚡ สำคัญ: ยิง Ping ทุก 5 วินาที เพื่อเลี้ยงท่อเน็ตไว้ ไม่ให้หลุด
+// ⚡ ยิง Ping ทุก 5 วินาที เพื่อเลี้ยงสายเน็ต
 const interval = setInterval(() => { wss.clients.forEach((ws) => { if (ws.readyState === WebSocket.OPEN) ws.ping(); }); }, 5000); 
 wss.on('close', () => clearInterval(interval));
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`\n${c.p}==========================================${c.rst}`);
-    console.log(`${c.b}🚀 BIGAVTAR CLOUD - SAAS RENTER EDITION${c.rst}`);
+    console.log(`${c.b}🚀 BIGAVTAR CLOUD - ENTERPRISE RENTER EDITION${c.rst}`);
     console.log(`${c.g}✅ API Link: ${API_URL}${c.rst}`);
-    console.log(`${c.g}✅ API Key Loaded. Ready to Sync!${c.rst}`);
+    console.log(`${c.g}✅ API Key Loaded. Protection Active!${c.rst}`);
     console.log(`${c.p}==========================================${c.rst}\n`);
 });
