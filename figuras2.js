@@ -17,19 +17,21 @@ process.on('uncaughtException', (err) => { console.log(`${c.r}[Error] ${err.mess
 process.on('unhandledRejection', (reason) => {});
 
 // ==========================================
-// ⚙️ การตั้งค่าสำหรับเซิร์ฟเวอร์ผู้เช่า (RENTER CONFIG)
+// ⚙️ การตั้งค่าสำหรับเซิร์ฟเวอร์ (RENTER CONFIG)
 // ==========================================
 const PORT = 80; 
-const LIMIT_BYTES = 10 * 1024 * 1024; 
+const LIMIT_BYTES = 10 * 1024 * 1024; // ลิมิต 10MB
 const ENABLE_WHITELIST = true; 
+
+// 🌐 ใส่ลิงก์ Discord Webhook ตรงนี้ (ถ้ามี) เพื่อรับแจ้งเตือน
+const DISCORD_WEBHOOK_URL = "https://ptb.discord.com/api/webhooks/1493205171088523356/kZDhTcWxPUv9NNKG035D7Er7P2tJAL9Sh14v1OjzHyE_HmYcUNcw72mFj4QkTunS8UNA"; 
 
 // 🌐 API Bridge (ลิงก์เว็บจัดการหลัก)
 const API_URL = "https://bigavatar.dpdns.org/api.php"; 
 
 // 🔑 นำ API Key จากหน้าเว็บมาใส่ที่นี่
-const API_KEY = "8f5619fad84f8aae15c3b147a90e673b"; 
+const API_KEY = "5de1a6c187ba4e39165c60deee6f8f0f"; 
 
-// 🌟 ข้อความ MOTD
 const MOTD_MESSAGE = "§b§lขอขอบคุณที่ใช้บริการนะคับ §f§l- §a§lดูรายละเอียดเพิ่มเติมได้ที่: §e§nhttps://dash.faydar.eu.cc";
 // ==========================================
 
@@ -40,6 +42,7 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(cors());
 
+// 🛡️ เพิ่มระบบ Anti-DDoS ให้ API
 const apiLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 2000, message: { error: "Too many requests." } });
 app.use('/api/', apiLimiter);
 app.use((req, res, next) => { if (req.url.includes('//')) req.url = req.url.replace(/\/{2,}/g, '/'); next(); });
@@ -49,8 +52,8 @@ const tokens = new Map();
 const tokenMap = new Map(); 
 const wsMap = new Map(); 
 let hashCache = new Map(); 
+const spamTracker = new Map(); // ระบบแบนคนสแปมชั่วคราว
 
-// 💾 ระบบจดจำแคช (Persistent Hash Cache)
 const cacheFile = path.join(__dirname, 'hashCache.json');
 if (fs.existsSync(cacheFile)) {
     try { hashCache = new Map(Object.entries(JSON.parse(fs.readFileSync(cacheFile)))); } catch(e) {}
@@ -67,25 +70,31 @@ const fastAxios = axios.create({
     httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 100, rejectUnauthorized: false })
 });
 
+// ฟังก์ชันส่งข้อความเข้า Discord
+function sendToDiscord(message) {
+    if (!DISCORD_WEBHOOK_URL || DISCORD_WEBHOOK_URL === "") return;
+    axios.post(DISCORD_WEBHOOK_URL, { content: message }).catch(() => {});
+}
+
 function formatUuid(uuid) { 
     if (!uuid || uuid.length !== 32) return uuid || "";
     return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
 }
 
-// 🧹 ระบบทำความสะอาดขยะล้ำลึก (Deep Clean)
+// 🧹 เคลียร์ Memory และ ไฟล์ขยะ
 setInterval(() => { 
     const now = Date.now();
     for (let [id, data] of server_ids.entries()) {
         if (now - data.time > 60000) server_ids.delete(id); 
     }
-    // สแกนลบไฟล์ .tmp ที่โหลดไม่เสร็จ
+    spamTracker.clear(); // ล้างประวัติสแปมทุกๆ 5 นาที
     fs.readdir(avatarsDir, (err, files) => {
         if (err) return;
         files.forEach(file => { if (file.endsWith('.tmp')) fs.unlink(path.join(avatarsDir, file), () => {}); });
     });
 }, 5 * 60 * 1000);
 
-// ⚡ ซิงค์ข้อมูล API ป้องกันเกมแครช
+// ⚡ ซิงค์ข้อมูลกับเว็บ 
 async function syncAndMonitor() {
     try {
         const formData = new URLSearchParams();
@@ -132,6 +141,7 @@ async function syncAndMonitor() {
             hbData.append('data', JSON.stringify(onlineData));
             fastAxios.post(API_URL, hbData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }}).catch(()=>{});
         }
+
     } catch (e) {} 
 }
 setInterval(syncAndMonitor, 2000); 
@@ -196,8 +206,16 @@ app.put('/api/avatar', (req, res) => {
     let contentLength = parseInt(req.headers['content-length'] || '0');
     userInfo.lastSize = contentLength;
     
+    // 🛡️ ระบบแบนคนสแปมชั่วคราว
     if (contentLength > LIMIT_BYTES) {
-        userActivity.set(userInfo.username, "❌ ไฟล์โมเดลใหญ่เกินกำหนด!");
+        userActivity.set(userInfo.username, "❌ สแปมไฟล์ใหญ่เกิน!");
+        let strikes = (spamTracker.get(userInfo.username) || 0) + 1;
+        spamTracker.set(userInfo.username, strikes);
+        
+        if (strikes >= 3) {
+            sendToDiscord(`🚨 **[ระบบป้องกัน]** \`${userInfo.username}\` พยายามอัปโหลดไฟล์เกิน 10MB รัวๆ (โดนเตะชั่วคราว)`);
+            sqlBlacklist.add(userInfo.username.toLowerCase()); // แบนเข้า Blacklist สดๆ ทันที
+        }
         return res.status(413).end();
     }
 
@@ -215,7 +233,7 @@ app.put('/api/avatar', (req, res) => {
         try {
             await fsp.rename(tempFile, finalFile);
             hashCache.set(userInfo.uuid, hash.digest('hex')); 
-            saveCache(); // บันทึกแคช
+            saveCache(); 
             userActivity.set(userInfo.username, "✅ อัปโหลดสำเร็จ!");
             if (wsMap.has(userInfo.uuid)) {
                 const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
@@ -279,7 +297,7 @@ app.get('/api/:uuid', async (req, res) => {
 app.get('/', (req, res) => { res.status(200).send(MOTD_MESSAGE); });
 
 // ==========================================
-// ⚡ WEBSOCKET (ระบบ Anti-Drop)
+// ⚡ WEBSOCKET (ระบบ Anti-Drop สมบูรณ์แบบ)
 // ==========================================
 const server = http.createServer(app);
 server.keepAliveTimeout = 120000; 
@@ -337,8 +355,9 @@ wss.on('close', () => clearInterval(interval));
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`\n${c.p}==========================================${c.rst}`);
-    console.log(`${c.b}🚀 BIGAVTAR CLOUD - ENTERPRISE EDITION V5${c.rst}`);
+    console.log(`${c.b}🚀 BIGAVTAR CLOUD - GOD TIER V6${c.rst}`);
     console.log(`${c.g}✅ API Link: ${API_URL}${c.rst}`);
-    console.log(`${c.g}✅ API Key: Enabled. Engine Active!${c.rst}`);
+    console.log(`${c.g}✅ Protection & Webhooks Active!${c.rst}`);
     console.log(`${c.p}==========================================${c.rst}\n`);
+    sendToDiscord("✅ **[ระบบเปิดใช้งาน]** เซิร์ฟเวอร์ Figura (V6) ออนไลน์แล้ว!");
 });
