@@ -13,22 +13,23 @@ const rateLimit = require('express-rate-limit');
 const c = { g: '\x1b[32m', b: '\x1b[36m', y: '\x1b[33m', r: '\x1b[31m', p: '\x1b[35m', rst: '\x1b[0m' };
 const logTime = () => `[${new Date().toLocaleTimeString('th-TH')}]`;
 
-process.on('uncaughtException', (err) => {});
+process.on('uncaughtException', (err) => { console.log(`${c.r}[Error] ${err.message}${c.rst}`); });
 process.on('unhandledRejection', (reason) => {});
 
 // ==========================================
-// ⚙️ การตั้งค่าสำหรับผู้เช่า (RENTER CONFIG)
+// ⚙️ การตั้งค่าสำหรับเซิร์ฟเวอร์ผู้เช่า (RENTER CONFIG)
 // ==========================================
 const PORT = 80; 
 const LIMIT_BYTES = 10 * 1024 * 1024; 
 const ENABLE_WHITELIST = true; 
 
-// 🌐 API Bridge (ลิงก์ชี้ไปที่โดเมนของคุณ)
+// 🌐 API Bridge (ลิงก์เว็บจัดการหลัก)
 const API_URL = "https://bigavatar.dpdns.org/api.php"; 
 
-// 🔑 API Key (ก็อปจากหน้าแดชบอร์ดมาใส่)
+// 🔑 นำ API Key จากหน้าเว็บมาใส่ที่นี่
 const API_KEY = "8f5619fad84f8aae15c3b147a90e673b"; 
 
+// 🌟 ข้อความ MOTD
 const MOTD_MESSAGE = "§b§lขอขอบคุณที่ใช้บริการนะคับ §f§l- §a§lดูรายละเอียดเพิ่มเติมได้ที่: §e§nhttps://dash.faydar.eu.cc";
 // ==========================================
 
@@ -47,7 +48,14 @@ const server_ids = new Map();
 const tokens = new Map();
 const tokenMap = new Map(); 
 const wsMap = new Map(); 
-const hashCache = new Map(); 
+let hashCache = new Map(); 
+
+// 💾 ระบบจดจำแคช (Persistent Hash Cache)
+const cacheFile = path.join(__dirname, 'hashCache.json');
+if (fs.existsSync(cacheFile)) {
+    try { hashCache = new Map(Object.entries(JSON.parse(fs.readFileSync(cacheFile)))); } catch(e) {}
+}
+const saveCache = () => fs.writeFile(cacheFile, JSON.stringify(Object.fromEntries(hashCache)), () => {});
 
 let sqlBlacklist = new Set();
 let sqlWhitelist = new Set();
@@ -64,15 +72,20 @@ function formatUuid(uuid) {
     return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
 }
 
-// 🧹 เคลียร์ Memory เซสชั่นที่ค้าง
+// 🧹 ระบบทำความสะอาดขยะล้ำลึก (Deep Clean)
 setInterval(() => { 
     const now = Date.now();
     for (let [id, data] of server_ids.entries()) {
         if (now - data.time > 60000) server_ids.delete(id); 
     }
+    // สแกนลบไฟล์ .tmp ที่โหลดไม่เสร็จ
+    fs.readdir(avatarsDir, (err, files) => {
+        if (err) return;
+        files.forEach(file => { if (file.endsWith('.tmp')) fs.unlink(path.join(avatarsDir, file), () => {}); });
+    });
 }, 5 * 60 * 1000);
 
-// ⚡ ซิงค์ข้อมูลกับเว็บ 
+// ⚡ ซิงค์ข้อมูล API ป้องกันเกมแครช
 async function syncAndMonitor() {
     try {
         const formData = new URLSearchParams();
@@ -97,7 +110,7 @@ async function syncAndMonitor() {
             
             onlineData.push({
                 name: userInfo.username,
-                activity: userActivity.get(userInfo.username) || "Idle (ออนไลน์)",
+                activity: userActivity.get(userInfo.username) || "Idle (ออนไลน์ปกติ)",
                 last_size: userInfo.lastSize || 0
             });
 
@@ -106,6 +119,7 @@ async function syncAndMonitor() {
                 tokens.delete(tokenStr);
                 tokenMap.delete(ws);
                 hashCache.delete(userInfo.uuid);
+                saveCache();
                 fsp.unlink(path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`)).catch(() => {}); 
                 if (wsMap.has(userInfo.uuid)) wsMap.delete(userInfo.uuid);
             }
@@ -118,7 +132,6 @@ async function syncAndMonitor() {
             hbData.append('data', JSON.stringify(onlineData));
             fastAxios.post(API_URL, hbData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }}).catch(()=>{});
         }
-
     } catch (e) {} 
 }
 setInterval(syncAndMonitor, 2000); 
@@ -202,6 +215,7 @@ app.put('/api/avatar', (req, res) => {
         try {
             await fsp.rename(tempFile, finalFile);
             hashCache.set(userInfo.uuid, hash.digest('hex')); 
+            saveCache(); // บันทึกแคช
             userActivity.set(userInfo.username, "✅ อัปโหลดสำเร็จ!");
             if (wsMap.has(userInfo.uuid)) {
                 const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
@@ -218,6 +232,7 @@ app.delete('/api/avatar', async (req, res) => {
     try {
         await fsp.unlink(path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`)); 
         hashCache.delete(userInfo.uuid);
+        saveCache();
         if (wsMap.has(userInfo.uuid)) {
             const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); Buffer.from(userInfo.hexUuid, 'hex').copy(buffer, 1);
             wsMap.get(userInfo.uuid).forEach(ws => { if (ws.readyState === WebSocket.OPEN) ws.send(buffer); });
@@ -254,6 +269,7 @@ app.get('/api/:uuid', async (req, res) => {
             const fileBuffer = await fsp.readFile(avatarFile);
             fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
             hashCache.set(uuid, fileHash);
+            saveCache();
         } catch (e) {}
     }
     if (fileHash) data.equipped.push({ id: 'avatar', owner: uuid, hash: fileHash });
@@ -263,7 +279,7 @@ app.get('/api/:uuid', async (req, res) => {
 app.get('/', (req, res) => { res.status(200).send(MOTD_MESSAGE); });
 
 // ==========================================
-// ⚡ WEBSOCKET (ระบบ Anti-Drop สมบูรณ์แบบ)
+// ⚡ WEBSOCKET (ระบบ Anti-Drop)
 // ==========================================
 const server = http.createServer(app);
 server.keepAliveTimeout = 120000; 
@@ -316,14 +332,13 @@ wss.on('connection', (ws) => {
     });
 });
 
-// ⚡ ยิง Ping ทุก 5 วินาที เพื่อเลี้ยงสายเน็ต
 const interval = setInterval(() => { wss.clients.forEach((ws) => { if (ws.readyState === WebSocket.OPEN) ws.ping(); }); }, 5000); 
 wss.on('close', () => clearInterval(interval));
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`\n${c.p}==========================================${c.rst}`);
-    console.log(`${c.b}🚀 BIGAVTAR CLOUD - ENTERPRISE RENTER EDITION${c.rst}`);
+    console.log(`${c.b}🚀 BIGAVTAR CLOUD - ENTERPRISE EDITION V5${c.rst}`);
     console.log(`${c.g}✅ API Link: ${API_URL}${c.rst}`);
-    console.log(`${c.g}✅ API Key Loaded. Protection Active!${c.rst}`);
+    console.log(`${c.g}✅ API Key: Enabled. Engine Active!${c.rst}`);
     console.log(`${c.p}==========================================${c.rst}\n`);
 });
