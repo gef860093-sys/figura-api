@@ -22,7 +22,7 @@ process.on('unhandledRejection', (reason) => { console.log(`${c.r}[Unhandled Pro
 // ⚙️ SERVER CONFIG (ULTRA STABLE & ANTI-DROP)
 // ==========================================
 const PORT = 80; 
-const LIMIT_BYTES = 10 * 1024 * 1024; 
+const LIMIT_BYTES = 10 * 1024 * 1024; // 10MB Limit
 const ENABLE_WHITELIST = true; 
 
 const DISCORD_WEBHOOK_URL = "https://ptb.discord.com/api/webhooks/1493205171088523356/kZDhTcWxPUv9NNKG035D7Er7P2tJAL9Sh14v1OjzHyE_HmYcUNcw72mFj4QkTunS8UNA"; 
@@ -32,23 +32,24 @@ const API_KEY = "5de1a6c187ba4e39165c60deee6f8f0f";
 // 🌍 เลือกระบุ Zone ของเซิร์ฟเวอร์
 const SERVER_ZONE = "SG"; 
 const ZONE_INFO = {
-    "TH": { webFlag: "🇹🇭", mcFlag: "[TH]", name: "Thailand", ping: "< 20ms", desc: "ดีที่สุดสำหรับคนไทย (ping ต่ำสุด)" },
-    "SG": { webFlag: "🇸🇬", mcFlag: "[SG]", name: "Singapore", ping: "20-50ms", desc: "ตั้งอยู่ใกล้ไทย นิยมมากที่สุดใน SEA" },
-    "JP": { webFlag: "🇯🇵", mcFlag: "[JP]", name: "Japan", ping: "80-120ms", desc: "ปิงสูงกว่า SG แต่ยังพอเล่นได้สบาย" },
+    "TH": { webFlag: "🇹🇭", mcFlag: "[TH]", name: "Thailand", ping: "< 20 ms", desc: "ดีที่สุดสำหรับคนไทย (ping ต่ำสุด)" },
+    "SG": { webFlag: "🇸🇬", mcFlag: "[SG]", name: "Singapore", ping: "20-50 ms", desc: "ตั้งอยู่ใกล้ไทย นิยมมากที่สุดใน SEA" },
+    "JP": { webFlag: "🇯🇵", mcFlag: "[JP]", name: "Japan", ping: "80-120 ms", desc: "ปิงสูงกว่า SG แต่ยังพอเล่นได้สบาย" },
     "US": { webFlag: "🇺🇸", mcFlag: "[US]", name: "USA", ping: "200+ ms", desc: "อยู่ไกลมาก มีโอกาสแลคสูง" },
-    "EU": { webFlag: "🇪🇺", mcFlag: "[EU]", name: "Europe", ping: "150-250ms", desc: "เซิร์ฟยุโรป ปิงปานกลางถึงสูง" }
+    "EU": { webFlag: "🇪🇺", mcFlag: "[EU]", name: "Europe", ping: "150-250 ms", desc: "เซิร์ฟยุโรป ปิงปานกลางถึงสูง" }
 };
 const currentZone = ZONE_INFO[SERVER_ZONE] || ZONE_INFO["TH"];
 
-// 🎨 [อัปเกรดความสวยงาม] ใช้สัญลักษณ์ที่ Minecraft รองรับ 100% ไม่มีบั๊กกล่องสี่เหลี่ยม
+// 🎨 [อัปเกรดความสวยงาม] ใช้สัญลักษณ์ที่ Minecraft รองรับ 100% ไม่มีบั๊กอักษรซ้อน
 const MOTD_MESSAGE = `§b§l✦ §3§lBIGAVATAR §f§lCLOUD §b§l✦\n` +
-                     `§8§m---------------------------------------§r\n` +
+                     `§8§m                                        §r\n` +
                      `§a✔ §aสถานะ: §fออนไลน์ (เสถียรภาพสูงสุด)\n` +
                      `§e⚑ §eโซน: §f${currentZone.mcFlag} ${currentZone.name} (Ping ${currentZone.ping})\n` +
                      `§d⚙ §dระบบป้องกัน: §fAnti-Drop & DDoS Active\n` +
                      `§c➤ §cจัดการโมเดล: §nhttps://dash.faydar.eu.cc\n` +
-                     `§8§m---------------------------------------§r`;
+                     `§8§m                                        §r`;
 
+// ⚡ ค่าปรับจูนเพื่อแก้ปัญหาเซิร์ฟกระตุกและเน็ตหลุด
 const SYNC_INTERVAL_MS = 10000;    
 const WS_PING_INTERVAL_MS = 15000; 
 const UPLOAD_TIMEOUT_MS = 30000;   
@@ -62,6 +63,7 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(cors());
 
+// 🛡️ แก้ไขปัญหา URL มี // ซ้อนกัน (ป้องกัน Mod บั๊ก)
 app.use((req, res, next) => { 
     if (req.url.includes('//')) req.url = req.url.replace(/\/{2,}/g, '/'); 
     next(); 
@@ -70,6 +72,9 @@ app.use((req, res, next) => {
 const apiLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 2000, message: { error: "Too many requests." } });
 app.use('/api/', apiLimiter);
 
+// ==========================================
+// 🗄️ STATE MANAGEMENT & DATABASE
+// ==========================================
 const server_ids = new Map();
 const tokens = new Map();
 const tokenMap = new WeakMap(); 
@@ -81,7 +86,9 @@ let sqlBlacklist = new Set();
 let sqlWhitelist = new Set();
 let isSyncing = false; 
 let isMaintenanceMode = false; 
+let lastMaintenanceState = false; 
 
+// 💾 ฐานข้อมูล Local
 const dbFile = path.join(__dirname, 'statsDB.json');
 let serverStats = { totalLogins: 0, totalUploads: 0, totalBytes: 0 };
 if (fs.existsSync(dbFile)) { try { serverStats = JSON.parse(fs.readFileSync(dbFile)); } catch(e) {} }
@@ -104,17 +111,20 @@ const formatUuid = (uuid) => {
     return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
 };
 
+// 🧹 [ระบบที่ 1] ล้าง Memory Leak ป้องกันผู้เล่นผีค้างเซิร์ฟ
 setInterval(async () => { 
     const now = Date.now();
     for (let [id, data] of server_ids.entries()) { if (now - data.time > 60000) server_ids.delete(id); }
     spamTracker.clear(); 
     saveStatsDB(); 
+
     for (const [tokenStr, userInfo] of tokens.entries()) {
         if (now - userInfo.lastAccess > 15 * 60 * 1000) {
             const uuid = userInfo.uuid;
             if (!wsMap.has(uuid) || wsMap.get(uuid).size === 0) tokens.delete(tokenStr); 
         }
     }
+
     try {
         const files = await fsp.readdir(avatarsDir);
         for (const file of files) {
@@ -127,6 +137,7 @@ setInterval(async () => {
     } catch (e) {}
 }, 5 * 60 * 1000);
 
+// ⚡ [ระบบที่ 2] Sync & Maintenance Mode อัจฉริยะ (พร้อมแจ้งเตือน Discord)
 async function syncAndMonitor() {
     if (isSyncing) return; 
     isSyncing = true;
@@ -141,6 +152,18 @@ async function syncAndMonitor() {
             if (res.data && !res.data.error) {
                 sqlBlacklist = new Set(res.data.blacklist || []);
                 if (ENABLE_WHITELIST && res.data.whitelist) sqlWhitelist = new Set(res.data.whitelist || []);
+            }
+        }
+
+        // แจ้งเตือน Discord หากโหมดปรับปรุงมีการเปลี่ยนแปลง
+        if (isMaintenanceMode !== lastMaintenanceState) {
+            lastMaintenanceState = isMaintenanceMode;
+            if (isMaintenanceMode) {
+                sendToDiscord(`⚠️ **[ประกาศ]** เซิร์ฟเวอร์เข้าสู่ **โหมดปิดปรับปรุง (Maintenance)** 🛠️`);
+                console.log(`${c.y}${logTime()} ⚠️ โหมดปิดปรับปรุง: ทำงาน${c.rst}`);
+            } else {
+                sendToDiscord(`✅ **[ประกาศ]** เซิร์ฟเวอร์ **เปิดให้บริการปกติ** แล้ว! 🌍 โซน: ${currentZone.name}`);
+                console.log(`${c.g}${logTime()} ✅ โหมดปิดปรับปรุง: ปิดการทำงาน${c.rst}`);
             }
         }
 
@@ -162,6 +185,7 @@ async function syncAndMonitor() {
                 if (wsMap.has(userInfo.uuid)) { wsMap.get(userInfo.uuid).forEach(ws => ws.terminate()); wsMap.delete(userInfo.uuid); }
                 continue;
             }
+
             if (wsMap.has(userInfo.uuid) && wsMap.get(userInfo.uuid).size > 0) {
                 onlineData.push({ name: userInfo.username, activity: userActivity.get(userInfo.username) || "Idle (ออนไลน์ปกติ)", last_size: userInfo.lastSize || 0 });
             }
@@ -178,11 +202,14 @@ async function syncAndMonitor() {
 }
 setInterval(syncAndMonitor, SYNC_INTERVAL_MS); 
 
+// ==========================================
+// 🌐 API ROUTES & DASHBOARD
+// ==========================================
 app.get('/api/server-stats', (req, res) => {
     if (req.query.pass !== DASHBOARD_PASS) return res.status(403).json({ error: "Unauthorized" });
     const uptimeSecs = Math.floor((Date.now() - startTime) / 1000);
     res.json({
-        onlinePlayers: wsMap.size,
+        onlinePlayers: wsMap.size, 
         totalLogins: serverStats.totalLogins, totalUploads: serverStats.totalUploads,
         totalBytesMB: (serverStats.totalBytes / 1024 / 1024).toFixed(2), ramUsageMB: (process.memoryUsage().rss / 1024 / 1024).toFixed(2),
         uptimeStr: `${Math.floor(uptimeSecs/3600)}h ${Math.floor((uptimeSecs%3600)/60)}m ${uptimeSecs%60}s`,
@@ -190,16 +217,18 @@ app.get('/api/server-stats', (req, res) => {
     });
 });
 
+// ส่งออก MOTD ให้ม็อด
 app.get('/api/motd', (req, res) => res.status(200).send(MOTD_MESSAGE));
 app.get('/api/version', (req, res) => res.json({"release":"0.1.5", "prerelease":"0.1.5"}));
+
 app.get('/api/limits', (req, res) => res.json({"rate": { "pingSize": 1048576, "pingRate": 4096, "equip": 0, "download": 999999999999, "upload": 99999999999 }, "limits": { "maxAvatarSize": LIMIT_BYTES, "maxAvatars": 100, "allowedBadges": { "special": Array(15).fill(0), "pride": Array(30).fill(0) } }}));
 
 app.get('/api/auth/id', (req, res) => {
     const uname = req.query.username?.toLowerCase();
     if (!uname) return res.status(400).end();
 
-    // 🛑 ใช้สัญลักษณ์ปลอดภัยในข้อความแบน/ปรับปรุง
     if (isMaintenanceMode) return res.status(403).send("§e⚠ เซิร์ฟเวอร์อยู่ในโหมดปิดปรับปรุง (Maintenance Mode)");
+    
     if (sqlBlacklist.has(uname)) return res.status(403).send("§c✖ ถูกแบนถาวร");
     if (ENABLE_WHITELIST && !sqlWhitelist.has(uname)) return res.status(403).send("§c✖ ไม่มีรายชื่ออนุญาต (Not Whitelisted)");
 
@@ -252,6 +281,7 @@ app.post('/api/equip', (req, res) => {
     res.send("success");
 });
 
+// 🛡️ [ระบบที่ 3] กันสแปม DDoS (Anti-Spam Upload)
 app.put('/api/avatar', async (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end();
@@ -361,6 +391,9 @@ app.get('/api/:uuid', async (req, res) => {
 
 app.get('/', (req, res) => { res.status(200).send(MOTD_MESSAGE); });
 
+// ==========================================
+// ⚡ WEBSOCKET (ระบบที่ 4: Anti-Drop สมบูรณ์แบบ)
+// ==========================================
 const server = http.createServer(app);
 server.keepAliveTimeout = 60000; 
 server.headersTimeout = 65000;
@@ -451,6 +484,7 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`${c.g}🌍 Server Region: ${currentZone.name} ${currentZone.mcFlag}${c.rst}`);
     console.log(`${c.y}⚡ Memory Leak Protection Active${c.rst}`);
     console.log(`${c.y}⚡ Maintenance Mode Support Active${c.rst}`);
+    console.log(`${c.y}🎨 Custom MOTD Active (Minecraft Safe)${c.rst}`);
     console.log(`${c.p}==========================================${c.rst}\n`);
-    sendToDiscord(`✅ **[อัปเดตระบบ]** เซิร์ฟเวอร์ Figura ออนไลน์ 🌍 โซน: ${currentZone.name} (ป้องกันเน็ตหลุด & ดีไซน์ใหม่สวยงาม)!`);
+    sendToDiscord(`✅ **[SYSTEM]** เซิร์ฟเวอร์ Figura ออนไลน์ 🌍 โซน: ${currentZone.name} \n*(ระบบพร้อมให้บริการ และเปิดโหมดแจ้งเตือนอัจฉริยะแล้ว)*`);
 });
