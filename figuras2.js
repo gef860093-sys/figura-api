@@ -28,7 +28,7 @@ const LIMIT_BYTES = 20 * 1024 * 1024; // ลิมิตขนาดโมเด
 const ENABLE_WHITELIST = true; 
 
 // 💬 ระบบแจ้งเตือน Discord
-const DISCORD_WEBHOOK_URL = "https://ptb.discord.com/api/webhooks/1493205171088523356/kZDhTcWxPUv9NNKG035D7Er7P2tJAL9Sh14v1OjzHyE_HmYcUNcw72mFj4QkTunS8UNA"; 
+const DISCORD_WEBHOOK_URL = "https://ptb.discord.com/api/webhooks/1493703745157202030/pEjI4onAq4dIgZJ-wxencEBG93rmjvBCKIlrikpF4a6XkXYxo-4X2K3zTN9mlEaJtW2l"; 
 const API_URL = "https://bigavatar.dpdns.org/api.php"; 
 const API_KEY = "5de1a6c187ba4e39165c60deee6f8f0f"; 
 
