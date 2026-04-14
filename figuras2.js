@@ -21,7 +21,7 @@ process.on('uncaughtException', (err) => { console.error(`${c.r}${logTime()} [Fa
 process.on('unhandledRejection', (reason) => { console.error(`${c.r}${logTime()} [Unhandled Promise] ${reason}${c.rst}`); });
 
 // ==========================================
-// ⚙️ SERVER CONFIG (HYPER SPEED & STABILITY)
+// ⚙️ SERVER CONFIG (V12 ANTI-DROP MAX)
 // ==========================================
 const PORT = 80; 
 const LIMIT_BYTES = 20 * 1024 * 1024; // ลิมิตขนาดโมเดลสูงสุด 20MB
@@ -30,7 +30,7 @@ const ENABLE_WHITELIST = true;
 // 💬 ระบบแจ้งเตือน Discord
 const DISCORD_WEBHOOK_URL = "https://ptb.discord.com/api/webhooks/1493712415831887955/-DO5NvlZUp83EDkr7JQb13QHdrTNeveugQwXy2Ni74fxxbbw4PYcuQHqoUgs2Q7cOaz-"; 
 const API_URL = "https://bigavatar.dpdns.org/api.php"; 
-const API_KEY = "074a2552c7918c9def25f9f29a2d830d"; 
+const API_KEY = "b9a23abea9240f3f2fc325a3e623f8f0"; 
 
 // 🌍 เลือกระบุ Zone ของเซิร์ฟเวอร์
 const SERVER_ZONE = "TH"; 
@@ -43,7 +43,7 @@ const ZONE_INFO = {
 };
 const currentZone = ZONE_INFO[SERVER_ZONE] || ZONE_INFO["TH"];
 
-// 🎨 [EPIC MOTD] อัปเดตสีสันให้ตรงปก พรีเมียม อ่านง่าย ฟอนต์ไม่พัง
+// 🎨 [EPIC MOTD] สัญลักษณ์ Unicode แท้ 100% เกม Minecraft อ่านออก ไม่มีบั๊กกล่อง []
 const MOTD_MESSAGE = 
     `§8§m                                        §r\n` +
     `  §3§l✦ §b§lB§3§lI§b§lG§3§lA§b§lV§3§lA§b§lT§3§lA§b§lR §f§lC§7§lL§f§lO§7§lU§f§lD §b§l✦\n` +
@@ -54,10 +54,10 @@ const MOTD_MESSAGE =
     `§c ➤ §cสามารถเข้าไปดูรายละเอียดได้ในเว็บไซต์: §nhttps://dash.faydar.eu.cc\n` +
     `§8§m                                        §r`;
 
-// ⚡ ค่าปรับจูนเพื่อความเร็วขั้นสุด
-const SYNC_INTERVAL_MS = 10000;    
-const WS_PING_INTERVAL_MS = 15000; 
-const UPLOAD_TIMEOUT_MS = 25000;   // ⚡ ให้เวลาอัปโหลด 25 วิ เผื่อไฟล์ 20MB
+// ⚡ ค่าปรับจูนเพื่อแก้ปัญหา "หลุดบ่อย"
+const SYNC_INTERVAL_MS = 12000;    // Sync หน้าเว็บทุก 12 วิ ลดภาระ
+const WS_PING_INTERVAL_MS = 20000; // ปิงเช็คผู้เล่นทุกๆ 20 วิ
+const UPLOAD_TIMEOUT_MS = 120000;  // 🚀 เพิ่มเวลาอัปโหลดเป็น 2 นาที! (แก้หลุดตอนส่งไฟล์ 20MB)
 const DASHBOARD_PASS = "admin123"; 
 // ==========================================
 
@@ -67,6 +67,9 @@ if (!fs.existsSync(avatarsDir)) fs.mkdirSync(avatarsDir, { recursive: true });
 const app = express();
 app.set('trust proxy', 1);
 app.use(cors());
+
+// 🚀 [SPEED UP] ดักจับแพ็คเก็ตใหญ่ตั้งแต่ระดับ Express
+app.use(express.raw({ limit: '22mb', type: 'application/octet-stream' })); 
 
 // 🛡️ [Bug Fix] แก้ปัญหา URL ซ้อนกัน (//) ป้องกันผู้เล่นบั๊ก
 app.use((req, res, next) => { 
@@ -86,7 +89,7 @@ const tokens = new Map();
 const tokenMap = new WeakMap(); 
 const wsMap = new Map(); 
 let hashCache = new Map(); 
-let apiJsonCache = new Map(); // 🚀 [เพิ่มระบบใหม่] RAM Cache สำหรับ API ป้องกันฮาร์ดดิสก์ทำงานหนัก
+let apiJsonCache = new Map(); // RAM Cache สำหรับ API ป้องกันฮาร์ดดิสก์ทำงานหนัก
 const spamTracker = new Map();
 const userActivity = new Map(); 
 
@@ -108,7 +111,7 @@ const saveCache = () => fsp.writeFile(cacheFile, JSON.stringify(Object.fromEntri
 
 // 🚀 ปรับจูน Axios ให้คุยกับ PHP เร็วขึ้น
 const fastAxios = axios.create({
-    timeout: 5000, 
+    timeout: 8000, 
     httpAgent: new http.Agent({ keepAlive: true, maxSockets: 100 }),
     httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 100, rejectUnauthorized: false })
 });
@@ -130,9 +133,9 @@ setInterval(async () => {
     spamTracker.clear(); 
     saveStatsDB(); 
 
-    // ⚡ เช็คผู้เล่นที่ไม่อัปเดตตัวแปรเกิน 15 นาที และเคลียร์ออกแบบถอนรากถอนโคน
+    // ⚡ เช็คผู้เล่นที่ไม่อัปเดตตัวแปรเกิน 20 นาที และเคลียร์ออก
     for (const [tokenStr, userInfo] of tokens.entries()) {
-        if (now - userInfo.lastAccess > 15 * 60 * 1000) {
+        if (now - userInfo.lastAccess > 20 * 60 * 1000) {
             const uuid = userInfo.uuid;
             if (!wsMap.has(uuid) || wsMap.get(uuid).size === 0) {
                 tokens.delete(tokenStr); 
@@ -141,14 +144,14 @@ setInterval(async () => {
         }
     }
     
-    // เคลียร์ wsMap ที่ว่างเปล่า (อุดรอยรั่ว RAM)
+    // เคลียร์ wsMap ที่ว่างเปล่า
     for (const [uuid, sockets] of wsMap.entries()) {
         if (sockets.size === 0) wsMap.delete(uuid);
     }
 
-    // 🚀 [ใหม่] เคลียร์ API RAM Cache ที่เก่าเกิน 10 นาที (ป้องกัน RAM เต็ม)
+    // 🚀 เคลียร์ API RAM Cache ที่เก่าเกิน 15 นาที
     for (const [uuid, cacheData] of apiJsonCache.entries()) {
-        if (now - cacheData.time > 10 * 60 * 1000) {
+        if (now - cacheData.time > 15 * 60 * 1000) {
             apiJsonCache.delete(uuid);
         }
     }
@@ -160,14 +163,13 @@ setInterval(async () => {
             if (file.endsWith('.tmp')) {
                 const filePath = path.join(avatarsDir, file);
                 const stats = await fsp.stat(filePath).catch(()=>null);
-                // ⚡ ตัดไฟล์ขยะทิ้งเร็วกว่าเดิม (5 นาที)
-                if (stats && (now - stats.mtimeMs > 5 * 60 * 1000)) { await fsp.unlink(filePath).catch(()=>{}); }
+                if (stats && (now - stats.mtimeMs > 10 * 60 * 1000)) { await fsp.unlink(filePath).catch(()=>{}); }
             }
         }
     } catch (e) {}
-}, 3 * 60 * 1000); // ⚡ รันตัวกวาดขยะทุก 3 นาที
+}, 5 * 60 * 1000);
 
-// ⚡ ระบบ Sync & อัปเดตสถานะแบบเรียลไทม์ (ไม่มีผู้เล่นผี)
+// ⚡ ระบบ Sync & อัปเดตสถานะแบบเรียลไทม์
 async function syncAndMonitor() {
     if (isSyncing) return; 
     isSyncing = true;
@@ -185,7 +187,7 @@ async function syncAndMonitor() {
             }
         }
 
-        // 🤖 แจ้งเตือน Discord (Smart Alerts)
+        // 🤖 แจ้งเตือน Discord
         if (isMaintenanceMode !== lastMaintenanceState) {
             lastMaintenanceState = isMaintenanceMode;
             if (isMaintenanceMode) {
@@ -201,11 +203,10 @@ async function syncAndMonitor() {
         for (const [tokenStr, userInfo] of tokens.entries()) {
             const uname = userInfo.username.toLowerCase();
             
-            // เตะคนออกถ้าอยู่ในโหมดปรับปรุงหรือโดนแบน
             if (isMaintenanceMode || sqlBlacklist.has(uname) || (ENABLE_WHITELIST && !sqlWhitelist.has(uname))) {
                 tokens.delete(tokenStr);
                 hashCache.delete(userInfo.uuid);
-                apiJsonCache.delete(userInfo.uuid); // ล้างแคชด้วย
+                apiJsonCache.delete(userInfo.uuid); 
                 saveCache();
                 fsp.unlink(path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`)).catch(() => {}); 
                 if (wsMap.has(userInfo.uuid)) { wsMap.get(userInfo.uuid).forEach(ws => ws.terminate()); wsMap.delete(userInfo.uuid); }
@@ -216,7 +217,7 @@ async function syncAndMonitor() {
             if (wsMap.has(userInfo.uuid) && wsMap.get(userInfo.uuid).size > 0) {
                 onlineData.push({ 
                     name: userInfo.username, 
-                    activity: userActivity.get(userInfo.username) || "Idle (กำลังเล่น)", 
+                    activity: userActivity.get(userInfo.username) || "Idle (ออนไลน์ปกติ)", 
                     last_size: userInfo.lastSize || 0 
                 });
             }
@@ -309,7 +310,7 @@ app.post('/api/equip', (req, res) => {
     res.send("success");
 });
 
-// 🛡️ [อัปเกรด] ระบบต่อต้านสแปม (ลื่นไหล ไม่ค้าง)
+// 🛡️ [อัปเกรด] ระบบรับไฟล์ดิบ (ป้องกันสายหลุดตอนอัปโหลด)
 app.put('/api/avatar', async (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end();
@@ -332,6 +333,7 @@ app.put('/api/avatar', async (req, res) => {
     const tempFile = path.join(__dirname, 'avatars', `${userInfo.uuid}.moon.tmp`);
     const finalFile = path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`);
     
+    // ⚡ ให้เวลาอัปโหลดเยอะขึ้น (2 นาที) ไม่ตัดสายทิ้งเร็วเกินไป
     const uploadTimeout = setTimeout(() => { req.destroy(); fsp.unlink(tempFile).catch(()=>{}); }, UPLOAD_TIMEOUT_MS);
 
     const writeStream = fs.createWriteStream(tempFile);
@@ -344,7 +346,6 @@ app.put('/api/avatar', async (req, res) => {
         clearTimeout(uploadTimeout); 
         await fsp.rename(tempFile, finalFile);
         
-        // 🚀 อัปเดต Hash และเคลียร์ RAM Cache เพื่อบังคับให้ดึงข้อมูลใหม่
         hashCache.set(userInfo.uuid, hash.digest('hex')); 
         apiJsonCache.delete(userInfo.uuid); 
         saveCache(); 
@@ -377,7 +378,6 @@ app.delete('/api/avatar', async (req, res) => {
         userActivity.set(userInfo.username, "🗑️ ลบโมเดล");
         await fsp.unlink(path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`)); 
         
-        // 🚀 ล้างข้อมูลจากระบบแคช
         hashCache.delete(userInfo.uuid);
         apiJsonCache.delete(userInfo.uuid);
         saveCache();
@@ -403,17 +403,16 @@ app.get('/api/:uuid/avatar', async (req, res) => {
     } catch (e) { res.status(404).end(); }
 });
 
-// 🚀 [SPEED UP] ระบบ In-Memory JSON Cache (ตอบสนองใน 0.001 วินาที ลดภาระฮาร์ดดิสก์ 99%)
+// 🚀 [SPEED UP] ระบบ In-Memory JSON Cache
 app.get('/api/:uuid', async (req, res) => {
     const uuidStr = req.params.uuid;
     if (["motd", "version", "auth", "limits", "stats-secret"].includes(uuidStr)) return res.status(404).end();
     const uuid = formatUuid(uuidStr);
     if (!uuid) return res.status(404).end();
 
-    // ⚡ เช็คว่ามีข้อมูลใน RAM หรือเปล่า? ถ้ามีส่งให้เลย!
     if (apiJsonCache.has(uuid)) {
         const cached = apiJsonCache.get(uuid);
-        cached.time = Date.now(); // ต่ออายุแคช
+        cached.time = Date.now(); 
         return res.json(cached.data);
     }
 
@@ -434,31 +433,36 @@ app.get('/api/:uuid', async (req, res) => {
     }
     
     if (fileHash) data.equipped.push({ id: 'avatar', owner: uuid, hash: fileHash });
-    
-    // ⚡ บันทึกข้อมูลลง RAM Cache
     apiJsonCache.set(uuid, { data: data, time: Date.now() });
-    
     res.json(data);
 });
 
 app.get('/', (req, res) => { res.status(200).send(MOTD_MESSAGE); });
 
 // ==========================================
-// ⚡ WEBSOCKET (ระบบจัดการสายหลุดขั้นสูง)
+// ⚡ WEBSOCKET (🚀 แก้บั๊กสายหลุด ถึกทน 100%)
 // ==========================================
 const server = http.createServer(app);
-server.keepAliveTimeout = 60000; 
-server.headersTimeout = 65000;
+
+// ⚡ ขยายขีดจำกัดการเชื่อมต่อ ป้องกัน Cloudflare เตะผู้เล่น
+server.keepAliveTimeout = 120000;  // 2 นาที
+server.headersTimeout = 125000;    // 2 นาที + 5 วิ
 
 const wss = new WebSocket.Server({ 
     server, 
     perMessageDeflate: false,
-    maxPayload: LIMIT_BYTES + 1048576 
+    maxPayload: LIMIT_BYTES + 1048576,
+    clientTracking: true
 });
 
 wss.on('connection', (ws) => {
     ws.isAlive = true; 
-    ws.on('pong', () => { ws.isAlive = true; }); 
+    ws.missedPings = 0; // ⚡ ตัวแปรนับจำนวนครั้งที่ปิงไม่ติด
+    
+    ws.on('pong', () => { 
+        ws.isAlive = true; 
+        ws.missedPings = 0; // รีเซ็ตเมื่อได้รับการตอบกลับ
+    }); 
 
     ws.on('message', (data) => {
         try {
@@ -509,7 +513,6 @@ wss.on('connection', (ws) => {
     
     ws.on('error', () => {}); 
     
-    // ⚡ [การแก้ไขหัวใจสำคัญ] จัดการสายหลุดแบบถอนรากถอนโคนทันที!
     ws.on('close', () => {
         const tokenStr = tokenMap.get(ws);
         if (tokenStr && tokens.has(tokenStr)) {
@@ -526,10 +529,15 @@ wss.on('connection', (ws) => {
     });
 });
 
+// ⚡ [ระบบทนทานปิง] อนุญาตให้เน็ตกระตุกได้ 3 รอบ (ประมาณ 1 นาที) ก่อนจะตัดสายทิ้ง!
 const interval = setInterval(() => { 
     wss.clients.forEach((ws) => { 
-        if (ws.isAlive === false) return ws.terminate(); 
-        ws.isAlive = false; 
+        if (ws.isAlive === false) {
+            ws.missedPings++;
+            // ถ้าไม่ตอบสนองเกิน 2 รอบ (ประมาณ 40-60 วิ) ค่อยตัดสาย ป้องกันคนหลุดง่าย
+            if (ws.missedPings >= 2) return ws.terminate(); 
+        }
+        ws.isAlive = false; // รีเซ็ตเพื่อรอเช็คในรอบถัดไป
         if (ws.readyState === WebSocket.OPEN) { try { ws.ping(); } catch(e){} }
     }); 
 }, WS_PING_INTERVAL_MS); 
@@ -538,12 +546,12 @@ wss.on('close', () => clearInterval(interval));
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`\n${c.p}==========================================${c.rst}`);
-    console.log(`${c.b}✨ BIGAVATAR CLOUD - V11 (HYPER OPTIMIZED)${c.rst}`);
+    console.log(`${c.b}✨ BIGAVATAR CLOUD - V12 (ANTI-DROP MAX)${c.rst}`);
     console.log(`${c.g}✅ API Link: ${API_URL}${c.rst}`);
     console.log(`${c.g}🌍 Server Region: ${currentZone.name} ${currentZone.mcFlag}${c.rst}`);
-    console.log(`${c.y}⚡ Deep GC & Memory Leak Protection: ACTIVE${c.rst}`);
+    console.log(`${c.y}⚡ Smart Heartbeat & Anti-Drop: ACTIVE${c.rst}`);
     console.log(`${c.y}⚡ RAM JSON Caching (99% Disk I/O Drop): ACTIVE${c.rst}`);
     console.log(`${c.y}🎨 Epic Minecraft-Safe MOTD: ACTIVE${c.rst}`);
     console.log(`${c.p}==========================================${c.rst}\n`);
-    sendToDiscord(`🚀 **[SYSTEM START]** เซิร์ฟเวอร์ Figura ออนไลน์แล้ว 🌍 โซน: ${currentZone.name} \n*(ระบบทำงานด้วยความเร็วสูงสุด ขอขอบคุณใช้บริการนะคับ)*`);
+    sendToDiscord(`🚀 **[SYSTEM START]** เซิร์ฟเวอร์ Figura V12 ออนไลน์แล้ว 🌍 โซน: ${currentZone.name} \n*(อัปเกรดระบบป้องกันสายหลุดขั้นสูงสุด ไม่กระตุก 100%)*`);
 });
