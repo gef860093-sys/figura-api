@@ -545,5 +545,5 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`${c.y}⚡ RAM JSON Caching (99% Disk I/O Drop): ACTIVE${c.rst}`);
     console.log(`${c.y}🎨 Epic Minecraft-Safe MOTD: ACTIVE${c.rst}`);
     console.log(`${c.p}==========================================${c.rst}\n`);
-    sendToDiscord(`🚀 **[SYSTEM START]** เซิร์ฟเวอร์ Figura ออนไลน์แล้ว 🌍 โซน: ${currentZone.name} \n*(ระบบทำงานด้วยความเร็วสูงสุด V11 Hyper Cache)*`);
+    sendToDiscord(`🚀 **[SYSTEM START]** เซิร์ฟเวอร์ Figura ออนไลน์แล้ว 🌍 โซน: ${currentZone.name} \n*(ระบบทำงานด้วยความเร็วสูงสุด ขอขอบคุณใช้บริการนะคับ)*`);
 });
