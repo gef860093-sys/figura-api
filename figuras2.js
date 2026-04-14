@@ -17,11 +17,11 @@ const logTime = () => `[${new Date().toLocaleTimeString('th-TH')}]`;
 const startTime = Date.now();
 
 // 🛡️ ป้องกันเซิร์ฟเวอร์ดับจากการ Error (Crash Protection)
-process.on('uncaughtException', (err) => { console.log(`${c.r}[Fatal Error] ${err.message}${c.rst}`); });
-process.on('unhandledRejection', (reason) => { console.log(`${c.r}[Unhandled Promise] ${reason}${c.rst}`); });
+process.on('uncaughtException', (err) => { console.error(`${c.r}${logTime()} [Fatal Error] ${err.message}${c.rst}`); });
+process.on('unhandledRejection', (reason) => { console.error(`${c.r}${logTime()} [Unhandled Promise] ${reason}${c.rst}`); });
 
 // ==========================================
-// ⚙️ SERVER CONFIG (ULTRA STABLE & ANTI-DROP)
+// ⚙️ SERVER CONFIG (ULTIMATE SPEED & STABILITY)
 // ==========================================
 const PORT = 80; 
 const LIMIT_BYTES = 20 * 1024 * 1024; // ลิมิตขนาดโมเดลสูงสุด 20MB
@@ -33,7 +33,7 @@ const API_URL = "https://bigavatar.dpdns.org/api.php";
 const API_KEY = "5de1a6c187ba4e39165c60deee6f8f0f"; 
 
 // 🌍 เลือกระบุ Zone ของเซิร์ฟเวอร์
-const SERVER_ZONE = "SG"; 
+const SERVER_ZONE = "🇹🇭"; 
 const ZONE_INFO = {
     "TH": { webFlag: "🇹🇭", mcFlag: "[TH]", name: "Thailand", ping: "< 20 ms" },
     "SG": { webFlag: "🇸🇬", mcFlag: "[SG]", name: "Singapore", ping: "20-50 ms" },
@@ -57,7 +57,7 @@ const MOTD_MESSAGE =
 // ⚡ ค่าปรับจูนเพื่อความเร็วขั้นสุด
 const SYNC_INTERVAL_MS = 10000;    
 const WS_PING_INTERVAL_MS = 15000; 
-const UPLOAD_TIMEOUT_MS = 25000;   // ตัดพวกสแปมอัปโหลดที่ค้างเกิน 25 วิ
+const UPLOAD_TIMEOUT_MS = 20000;   // ⚡ ลดเวลาตัดสแปมเหลือ 20 วิ (ไวขึ้น)
 const DASHBOARD_PASS = "admin123"; 
 // ==========================================
 
@@ -67,6 +67,9 @@ if (!fs.existsSync(avatarsDir)) fs.mkdirSync(avatarsDir, { recursive: true });
 const app = express();
 app.set('trust proxy', 1);
 app.use(cors());
+
+// 🚀 [SPEED UP] ดักจับแพ็คเก็ตที่ใหญ่เกินไปตั้งแต่ระดับ Express ป้องกัน CPU ทำงานหนัก
+app.use(express.raw({ limit: '22mb', type: 'application/octet-stream' })); 
 
 // 🛡️ [Bug Fix] แก้ปัญหา URL ซ้อนกัน (//) ป้องกันผู้เล่นบั๊ก
 app.use((req, res, next) => { 
@@ -105,10 +108,11 @@ const cacheFile = path.join(__dirname, 'hashCache.json');
 if (fs.existsSync(cacheFile)) { try { hashCache = new Map(Object.entries(JSON.parse(fs.readFileSync(cacheFile)))); } catch(e) {} }
 const saveCache = () => fsp.writeFile(cacheFile, JSON.stringify(Object.fromEntries(hashCache))).catch(()=>{});
 
+// 🚀 [SPEED UP] ปรับจูน Axios ให้คุยกับ PHP เร็วขึ้น ไม่ค้างสาย
 const fastAxios = axios.create({
-    timeout: 8000, 
-    httpAgent: new http.Agent({ keepAlive: true }),
-    httpsAgent: new https.Agent({ keepAlive: true, rejectUnauthorized: false })
+    timeout: 5000, 
+    httpAgent: new http.Agent({ keepAlive: true, maxSockets: 100 }),
+    httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 100, rejectUnauthorized: false })
 });
 
 // ฟังก์ชันปลอดภัยสำหรับการส่งข้อมูล WebSocket
@@ -151,11 +155,12 @@ setInterval(async () => {
             if (file.endsWith('.tmp')) {
                 const filePath = path.join(avatarsDir, file);
                 const stats = await fsp.stat(filePath).catch(()=>null);
-                if (stats && (now - stats.mtimeMs > 10 * 60 * 1000)) { await fsp.unlink(filePath).catch(()=>{}); }
+                // ⚡ ตัดไฟล์ขยะทิ้งเร็วกว่าเดิม (5 นาที)
+                if (stats && (now - stats.mtimeMs > 5 * 60 * 1000)) { await fsp.unlink(filePath).catch(()=>{}); }
             }
         }
     } catch (e) {}
-}, 5 * 60 * 1000);
+}, 3 * 60 * 1000); // ⚡ รันตัวกวาดขยะทุก 3 นาที (เร็วขึ้น)
 
 // ⚡ [อัปเกรด] ระบบ Sync & อัปเดตสถานะแบบเรียลไทม์ (ไม่มีผู้เล่นผี)
 async function syncAndMonitor() {
@@ -300,7 +305,7 @@ app.post('/api/equip', (req, res) => {
     res.send("success");
 });
 
-// 🛡️ [อัปเกรด] ระบบต่อต้านการสแปมโมเดล (Anti-Spam & DDoS Protection)
+// 🛡️ [อัปเกรดความเร็ว] ระบบต่อต้านการสแปมโมเดล (Anti-Spam & DDoS Protection)
 app.put('/api/avatar', async (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end();
@@ -324,7 +329,7 @@ app.put('/api/avatar', async (req, res) => {
     const finalFile = path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`);
     
     // ⚡ ตัดการเชื่อมต่อทันทีถ้าการอัปโหลดค้าง (ป้องกันคนยิงแบนด์วิดท์)
-    req.setTimeout(UPLOAD_TIMEOUT_MS, () => { req.destroy(); fsp.unlink(tempFile).catch(()=>{}); });
+    const uploadTimeout = setTimeout(() => { req.destroy(); fsp.unlink(tempFile).catch(()=>{}); }, UPLOAD_TIMEOUT_MS);
 
     const writeStream = fs.createWriteStream(tempFile);
     const hash = crypto.createHash('sha256');
@@ -332,6 +337,7 @@ app.put('/api/avatar', async (req, res) => {
 
     try {
         await pipeline(req, writeStream); 
+        clearTimeout(uploadTimeout); // ล้าง timeout ถ้าเสร็จทัน
         await fsp.rename(tempFile, finalFile);
         hashCache.set(userInfo.uuid, hash.digest('hex')); 
         saveCache(); 
@@ -349,6 +355,7 @@ app.put('/api/avatar', async (req, res) => {
         }
         res.send("success"); 
     } catch (err) {
+        clearTimeout(uploadTimeout);
         writeStream.destroy();
         fsp.unlink(tempFile).catch(()=>{});
         if (!res.headersSent) res.status(500).send({ error: "Upload failed" });
@@ -413,7 +420,7 @@ app.get('/api/:uuid', async (req, res) => {
 app.get('/', (req, res) => { res.status(200).send(MOTD_MESSAGE); });
 
 // ==========================================
-// ⚡ WEBSOCKET (ระบบป้องกันสายหลุด / แลกข้อมูล)
+// ⚡ WEBSOCKET (ระบบป้องกันสายหลุด / แลกข้อมูลความเร็วสูง)
 // ==========================================
 const server = http.createServer(app);
 server.keepAliveTimeout = 60000; 
@@ -445,7 +452,9 @@ wss.on('connection', (ws) => {
                 
                 userInfo.lastAccess = Date.now(); 
                 
-                const newbuffer = Buffer.allocUnsafe(22 + (data.length - 6));
+                const dataLen = data.length;
+                // 🚀 [SPEED UP] ลดการใช้ Memory Allocation ซ้ำซ้อน ป้องกันกระตุก
+                const newbuffer = Buffer.allocUnsafe(22 + (dataLen - 6));
                 newbuffer.writeUInt8(0, 0); 
                 userInfo.hexUuidBuffer.copy(newbuffer, 1); 
                 newbuffer.writeInt32BE(data.readInt32BE(1), 17); 
@@ -487,6 +496,7 @@ wss.on('connection', (ws) => {
                 if (wsMap.get(uuid).size === 0) {
                     wsMap.delete(uuid); 
                     tokens.delete(tokenStr); // ลบจากระบบเพื่อไม่ให้เป็นผู้เล่นผี
+                    userActivity.delete(tokens.get(tokenStr)?.username);
                 }
             }
         }
