@@ -40,14 +40,16 @@ const ZONE_INFO = {
 };
 const currentZone = ZONE_INFO[SERVER_ZONE] || ZONE_INFO["TH"];
 
-// 🎨 [อัปเกรดความสวยงาม] ใช้สัญลักษณ์ที่ Minecraft รองรับ 100% ไม่มีบั๊กอักษรซ้อน
-const MOTD_MESSAGE = `§b§l✦ §3§lBIGAVATAR §f§lCLOUD §b§l✦\n` +
-                     `§8§m                                        §r\n` +
-                     `§a✔ §aสถานะ: §fออนไลน์ (เสถียรภาพสูงสุด)\n` +
-                     `§e⚑ §eโซน: §f${currentZone.mcFlag} ${currentZone.name} (Ping ${currentZone.ping})\n` +
-                     `§d⚙ §dระบบป้องกัน: §fAnti-Drop & DDoS Active\n` +
-                     `§c➤ §cจัดการโมเดล: §nhttps://dash.faydar.eu.cc\n` +
-                     `§8§m                                        §r`;
+// 🎨 [EPIC MOTD] ใช้สัญลักษณ์ Unicode แท้ๆ (ไม่บั๊กกล่อง 100%) พร้อมเส้นกั้นสวยงาม
+const MOTD_MESSAGE = 
+    `§8§m                                        §r\n` +
+    `  §3§l✦ §b§lB§3§lI§b§lG§3§lA§b§lV§3§lA§b§lT§3§lA§b§lR §f§lC§7§lL§f§lO§7§lU§f§lD §b§l✦\n` +
+    `§8§m                                        §r\n` +
+    `§a ✔ §aสถานะเซิร์ฟเวอร์: §fออนไลน์ (เสถียร 100%)\n` +
+    `§e ⚑ §eโซนที่ให้บริการ: §f${currentZone.mcFlag} ${currentZone.name} §7(Ping ${currentZone.ping})\n` +
+    `§d ⚙ §dระบบความปลอดภัย: §fAnti-Drop & Anti-Spam Active\n` +
+    `§c ➤ §cจัดการโมเดลที่เว็บ: §nhttps://dash.faydar.eu.cc\n` +
+    `§8§m                                        §r`;
 
 // ⚡ ค่าปรับจูนเพื่อแก้ปัญหาเซิร์ฟกระตุกและเน็ตหลุด
 const SYNC_INTERVAL_MS = 10000;    
@@ -63,7 +65,6 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(cors());
 
-// 🛡️ แก้ไขปัญหา URL มี // ซ้อนกัน (ป้องกัน Mod บั๊ก)
 app.use((req, res, next) => { 
     if (req.url.includes('//')) req.url = req.url.replace(/\/{2,}/g, '/'); 
     next(); 
@@ -88,7 +89,6 @@ let isSyncing = false;
 let isMaintenanceMode = false; 
 let lastMaintenanceState = false; 
 
-// 💾 ฐานข้อมูล Local
 const dbFile = path.join(__dirname, 'statsDB.json');
 let serverStats = { totalLogins: 0, totalUploads: 0, totalBytes: 0 };
 if (fs.existsSync(dbFile)) { try { serverStats = JSON.parse(fs.readFileSync(dbFile)); } catch(e) {} }
@@ -111,7 +111,7 @@ const formatUuid = (uuid) => {
     return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
 };
 
-// 🧹 [ระบบที่ 1] ล้าง Memory Leak ป้องกันผู้เล่นผีค้างเซิร์ฟ
+// 🧹 ล้าง Memory Leak ป้องกันเซิร์ฟอืด
 setInterval(async () => { 
     const now = Date.now();
     for (let [id, data] of server_ids.entries()) { if (now - data.time > 60000) server_ids.delete(id); }
@@ -137,7 +137,7 @@ setInterval(async () => {
     } catch (e) {}
 }, 5 * 60 * 1000);
 
-// ⚡ [ระบบที่ 2] Sync & Maintenance Mode อัจฉริยะ (พร้อมแจ้งเตือน Discord)
+// ⚡ Sync อัจฉริยะแบบประหยัดพลังงาน
 async function syncAndMonitor() {
     if (isSyncing) return; 
     isSyncing = true;
@@ -155,7 +155,6 @@ async function syncAndMonitor() {
             }
         }
 
-        // แจ้งเตือน Discord หากโหมดปรับปรุงมีการเปลี่ยนแปลง
         if (isMaintenanceMode !== lastMaintenanceState) {
             lastMaintenanceState = isMaintenanceMode;
             if (isMaintenanceMode) {
@@ -186,9 +185,7 @@ async function syncAndMonitor() {
                 continue;
             }
 
-            if (wsMap.has(userInfo.uuid) && wsMap.get(userInfo.uuid).size > 0) {
-                onlineData.push({ name: userInfo.username, activity: userActivity.get(userInfo.username) || "Idle (ออนไลน์ปกติ)", last_size: userInfo.lastSize || 0 });
-            }
+            onlineData.push({ name: userInfo.username, activity: userActivity.get(userInfo.username) || "Idle (ออนไลน์ปกติ)", last_size: userInfo.lastSize || 0 });
         }
         
         if (onlineData.length > 0 && !isMaintenanceMode) {
@@ -209,7 +206,7 @@ app.get('/api/server-stats', (req, res) => {
     if (req.query.pass !== DASHBOARD_PASS) return res.status(403).json({ error: "Unauthorized" });
     const uptimeSecs = Math.floor((Date.now() - startTime) / 1000);
     res.json({
-        onlinePlayers: wsMap.size, 
+        onlinePlayers: tokens.size, // ⚡ นับผู้เล่นที่ Active จริงๆ แบบ Real-time
         totalLogins: serverStats.totalLogins, totalUploads: serverStats.totalUploads,
         totalBytesMB: (serverStats.totalBytes / 1024 / 1024).toFixed(2), ramUsageMB: (process.memoryUsage().rss / 1024 / 1024).toFixed(2),
         uptimeStr: `${Math.floor(uptimeSecs/3600)}h ${Math.floor((uptimeSecs%3600)/60)}m ${uptimeSecs%60}s`,
@@ -217,10 +214,10 @@ app.get('/api/server-stats', (req, res) => {
     });
 });
 
-// ส่งออก MOTD ให้ม็อด
 app.get('/api/motd', (req, res) => res.status(200).send(MOTD_MESSAGE));
 app.get('/api/version', (req, res) => res.json({"release":"0.1.5", "prerelease":"0.1.5"}));
 
+// ✅ คืนค่า allowedBadges กัน Mod Error แบบ 100%
 app.get('/api/limits', (req, res) => res.json({"rate": { "pingSize": 1048576, "pingRate": 4096, "equip": 0, "download": 999999999999, "upload": 99999999999 }, "limits": { "maxAvatarSize": LIMIT_BYTES, "maxAvatars": 100, "allowedBadges": { "special": Array(15).fill(0), "pride": Array(30).fill(0) } }}));
 
 app.get('/api/auth/id', (req, res) => {
@@ -281,7 +278,6 @@ app.post('/api/equip', (req, res) => {
     res.send("success");
 });
 
-// 🛡️ [ระบบที่ 3] กันสแปม DDoS (Anti-Spam Upload)
 app.put('/api/avatar', async (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end();
@@ -354,6 +350,7 @@ app.delete('/api/avatar', async (req, res) => {
 
 app.get('/api/:uuid/avatar', async (req, res) => { 
     const uuidStr = req.params.uuid;
+    // ✅ เพิ่ม stats-secret และตัวอื่นๆ ไม่ให้ Mod บั๊กตอนหาข้อมูล
     if (["motd", "version", "auth", "limits", "stats-secret"].includes(uuidStr)) return res.status(404).end();
     const avatarFile = path.join(__dirname, 'avatars', `${formatUuid(uuidStr)}.moon`);
     try {
@@ -392,7 +389,7 @@ app.get('/api/:uuid', async (req, res) => {
 app.get('/', (req, res) => { res.status(200).send(MOTD_MESSAGE); });
 
 // ==========================================
-// ⚡ WEBSOCKET (ระบบที่ 4: Anti-Drop สมบูรณ์แบบ)
+// ⚡ WEBSOCKET (ระบบที่ 4: Anti-Drop & Realtime Disconnect)
 // ==========================================
 const server = http.createServer(app);
 server.keepAliveTimeout = 60000; 
@@ -455,6 +452,7 @@ wss.on('connection', (ws) => {
     });
     
     ws.on('error', () => {}); 
+    
     ws.on('close', () => {
         const tokenStr = tokenMap.get(ws);
         if (tokenStr && tokens.has(tokenStr)) {
@@ -463,6 +461,8 @@ wss.on('connection', (ws) => {
                 wsMap.get(uuid).delete(ws); 
                 if (wsMap.get(uuid).size === 0) wsMap.delete(uuid); 
             }
+            // ⚡ [แก้บั๊กคนค้าง] ลบ Token ทันทีเมื่อผู้เล่นปิดเกม / เน็ตหลุด ยอดคนออนไลน์หน้าเว็บจะอัปเดตแบบ Realtime ทันที!
+            tokens.delete(tokenStr); 
         }
     });
 });
@@ -486,5 +486,5 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`${c.y}⚡ Maintenance Mode Support Active${c.rst}`);
     console.log(`${c.y}🎨 Custom MOTD Active (Minecraft Safe)${c.rst}`);
     console.log(`${c.p}==========================================${c.rst}\n`);
-    sendToDiscord(`✅ **[SYSTEM]** เซิร์ฟเวอร์ Figura ออนไลน์ 🌍 โซน: ${currentZone.name} \n*(ระบบพร้อมให้บริการ และเปิดโหมดแจ้งเตือนอัจฉริยะแล้ว)*`);
+    sendToDiscord(`✅ **[SYSTEM]** เซิร์ฟเวอร์ Figura ออนไลน์ 🌍 โซน: ${currentZone.name} \n*(ระบบพร้อมให้บริการ เรียบง่าย เสถียร และปลอดภัย)*`);
 });
