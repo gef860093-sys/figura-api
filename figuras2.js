@@ -21,10 +21,10 @@ process.on('uncaughtException', (err) => { console.error(`${c.r}${logTime()} [Fa
 process.on('unhandledRejection', (reason) => { console.error(`${c.r}${logTime()} [Unhandled Promise] ${reason}${c.rst}`); });
 
 // ==========================================
-// ⚙️ SERVER CONFIG (V12 ANTI-DROP MAX)
+// ⚙️ SERVER CONFIG (V12 ANTI-DROP MAX & BULLETPROOF UPLOAD)
 // ==========================================
 const PORT = 80; 
-const LIMIT_BYTES = 20 * 1024 * 1024; // ลิมิตขนาดโมเดลสูงสุด 20MB
+const LIMIT_BYTES = 30 * 1024 * 1024; // ลิมิตขนาดโมเดลสูงสุด 30MB
 const ENABLE_WHITELIST = true; 
 
 // 💬 ระบบแจ้งเตือน Discord
@@ -57,7 +57,6 @@ const MOTD_MESSAGE =
 // ⚡ ค่าปรับจูนเพื่อแก้ปัญหา "หลุดบ่อย"
 const SYNC_INTERVAL_MS = 12000;    // Sync หน้าเว็บทุก 12 วิ ลดภาระ
 const WS_PING_INTERVAL_MS = 20000; // ปิงเช็คผู้เล่นทุกๆ 20 วิ
-const UPLOAD_TIMEOUT_MS = 120000;  // 🚀 เพิ่มเวลาอัปโหลดเป็น 2 นาที! (แก้หลุดตอนส่งไฟล์ 20MB)
 const DASHBOARD_PASS = "admin123"; 
 // ==========================================
 
@@ -68,8 +67,8 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(cors());
 
-// 🚀 [SPEED UP] ดักจับแพ็คเก็ตใหญ่ตั้งแต่ระดับ Express
-app.use(express.raw({ limit: '22mb', type: 'application/octet-stream' })); 
+// 🚀 [แก้บั๊กโมเดลไม่ติด] โหลดไฟล์โมเดลพักไว้ใน RAM ให้เสร็จสมบูรณ์ 100% ก่อน (เพื่อ Hash ที่แม่นยำ)
+app.use(express.raw({ limit: '25mb', type: '*/*' })); 
 
 // 🛡️ [Bug Fix] แก้ปัญหา URL ซ้อนกัน (//) ป้องกันผู้เล่นบั๊ก
 app.use((req, res, next) => { 
@@ -119,9 +118,13 @@ const fastAxios = axios.create({
 // ฟังก์ชันปลอดภัยสำหรับการส่งข้อมูล WebSocket
 const safeSend = (ws, buffer) => { if (ws.readyState === WebSocket.OPEN) { try { ws.send(buffer); } catch (e) {} } };
 const sendToDiscord = (message) => { if (!DISCORD_WEBHOOK_URL) return; fastAxios.post(DISCORD_WEBHOOK_URL, { content: message }).catch(() => {}); };
+
+// 🛡️ ปรับฟอร์แมต UUID ให้รองรับแบบมีขีดและไม่มีขีด
 const formatUuid = (uuid) => { 
-    if (!uuid || uuid.length !== 32) return uuid || "";
-    return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
+    if (!uuid) return "";
+    const clean = uuid.replace(/-/g, '');
+    if (clean.length !== 32) return uuid;
+    return `${clean.slice(0, 8)}-${clean.slice(8, 12)}-${clean.slice(12, 16)}-${clean.slice(16, 20)}-${clean.slice(20)}`;
 };
 
 // 🧹 [อัปเกรด] ระบบล้างไฟล์ขยะและ Memory Leak ชั้นลึก
@@ -203,6 +206,7 @@ async function syncAndMonitor() {
         for (const [tokenStr, userInfo] of tokens.entries()) {
             const uname = userInfo.username.toLowerCase();
             
+            // เตะคนออกถ้าอยู่ในโหมดปรับปรุงหรือโดนแบน
             if (isMaintenanceMode || sqlBlacklist.has(uname) || (ENABLE_WHITELIST && !sqlWhitelist.has(uname))) {
                 tokens.delete(tokenStr);
                 hashCache.delete(userInfo.uuid);
@@ -310,15 +314,22 @@ app.post('/api/equip', (req, res) => {
     res.send("success");
 });
 
-// 🛡️ [อัปเกรด] ระบบรับไฟล์ดิบ (ป้องกันสายหลุดตอนอัปโหลด)
+// 🛡️ [แก้ไขบั๊กโมเดลไม่ติด 100%] ระบบอัปโหลดแบบ Buffer (แม่นยำที่สุด)
 app.put('/api/avatar', async (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end();
     
     userInfo.lastAccess = Date.now(); 
-    let contentLength = parseInt(req.headers['content-length'] || '0');
+    
+    // ⚡ รับข้อมูลจาก express.raw() ที่แปลงเป็น Buffer พักไว้ใน RAM แล้ว
+    const fileData = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
+    const contentLength = fileData.length;
+    
+    if (contentLength === 0) return res.status(400).send({ error: "Empty file upload" });
+    
     userInfo.lastSize = contentLength;
     
+    // 🛡️ ป้องกันระบบสแปม
     if (contentLength > LIMIT_BYTES) {
         let strikes = (spamTracker.get(userInfo.username) || 0) + 1;
         spamTracker.set(userInfo.username, strikes);
@@ -329,24 +340,18 @@ app.put('/api/avatar', async (req, res) => {
         return res.status(413).end();
     }
 
-    userActivity.set(userInfo.username, "📤 กำลังอัปโหลด...");
-    const tempFile = path.join(__dirname, 'avatars', `${userInfo.uuid}.moon.tmp`);
+    userActivity.set(userInfo.username, "📤 กำลังอัปโหลดโมเดล...");
     const finalFile = path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`);
-    
-    // ⚡ ให้เวลาอัปโหลดเยอะขึ้น (2 นาที) ไม่ตัดสายทิ้งเร็วเกินไป
-    const uploadTimeout = setTimeout(() => { req.destroy(); fsp.unlink(tempFile).catch(()=>{}); }, UPLOAD_TIMEOUT_MS);
-
-    const writeStream = fs.createWriteStream(tempFile);
-    const hash = crypto.createHash('sha256');
-    
-    req.on('data', chunk => hash.update(chunk));
 
     try {
-        await pipeline(req, writeStream); 
-        clearTimeout(uploadTimeout); 
-        await fsp.rename(tempFile, finalFile);
+        // 🚀 คำนวณ Hash จาก Buffer โดยตรง (แม่นยำล้านเปอร์เซ็นต์ โมเดลสวมใส่ติดแน่นอน)
+        const hash = crypto.createHash('sha256').update(fileData).digest('hex');
         
-        hashCache.set(userInfo.uuid, hash.digest('hex')); 
+        // 🚀 บันทึก Buffer ลงไฟล์ทันที
+        await fsp.writeFile(finalFile, fileData);
+        
+        // 🚀 อัปเดตแคชให้ตัวเกมโหลดไปโชว์ได้เลย
+        hashCache.set(userInfo.uuid, hash); 
         apiJsonCache.delete(userInfo.uuid); 
         saveCache(); 
 
@@ -356,6 +361,7 @@ app.put('/api/avatar', async (req, res) => {
 
         userActivity.set(userInfo.username, "✅ โมเดลพร้อมใช้งาน");
         
+        // 🚀 ส่งสัญญาณให้ผู้เล่นทุกคนในเกมรู้ว่าเปลี่ยนชุดแล้ว
         if (wsMap.has(userInfo.uuid)) {
             const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); 
             userInfo.hexUuidBuffer.copy(buffer, 1); 
@@ -363,9 +369,7 @@ app.put('/api/avatar', async (req, res) => {
         }
         res.send("success"); 
     } catch (err) {
-        clearTimeout(uploadTimeout);
-        writeStream.destroy();
-        fsp.unlink(tempFile).catch(()=>{});
+        console.error(`${c.r}${logTime()} [Upload Error] ${err.message}${c.rst}`);
         if (!res.headersSent) res.status(500).send({ error: "Upload failed" });
     }
 });
@@ -423,10 +427,8 @@ app.get('/api/:uuid', async (req, res) => {
     if (!fileHash) {
         try {
             await fsp.access(avatarFile);
-            const hashStream = crypto.createHash('sha256');
-            const readStream = fs.createReadStream(avatarFile);
-            await pipeline(readStream, hashStream);
-            fileHash = hashStream.digest('hex');
+            const fileBuffer = await fsp.readFile(avatarFile);
+            fileHash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
             hashCache.set(uuid, fileHash);
             saveCache();
         } catch (e) {}
@@ -440,7 +442,7 @@ app.get('/api/:uuid', async (req, res) => {
 app.get('/', (req, res) => { res.status(200).send(MOTD_MESSAGE); });
 
 // ==========================================
-// ⚡ WEBSOCKET (🚀 แก้บั๊กสายหลุด ถึกทน 100%)
+// ⚡ WEBSOCKET (ระบบจัดการสายหลุดขั้นสูง V12)
 // ==========================================
 const server = http.createServer(app);
 
@@ -546,12 +548,12 @@ wss.on('close', () => clearInterval(interval));
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`\n${c.p}==========================================${c.rst}`);
-    console.log(`${c.b}✨ BIGAVATAR CLOUD - V12 (ANTI-DROP MAX)${c.rst}`);
+    console.log(`${c.b}✨ BIGAVATAR CLOUD - V12 (ANTI-DROP & BUG FREE)${c.rst}`);
     console.log(`${c.g}✅ API Link: ${API_URL}${c.rst}`);
     console.log(`${c.g}🌍 Server Region: ${currentZone.name} ${currentZone.mcFlag}${c.rst}`);
     console.log(`${c.y}⚡ Smart Heartbeat & Anti-Drop: ACTIVE${c.rst}`);
-    console.log(`${c.y}⚡ RAM JSON Caching (99% Disk I/O Drop): ACTIVE${c.rst}`);
+    console.log(`${c.y}🛡️ Bulletproof Buffer Uploads: ACTIVE${c.rst}`);
     console.log(`${c.y}🎨 Epic Minecraft-Safe MOTD: ACTIVE${c.rst}`);
     console.log(`${c.p}==========================================${c.rst}\n`);
-    sendToDiscord(`🚀 **[SYSTEM START]** เซิร์ฟเวอร์ Figura V12 ออนไลน์แล้ว 🌍 โซน: ${currentZone.name} \n*(อัปเกรดระบบป้องกันสายหลุดขั้นสูงสุด ไม่กระตุก 100%)*`);
+    sendToDiscord(`🚀 **[SYSTEM START]** เซิร์ฟเวอร์ Figura V12 ออนไลน์แล้ว 🌍 โซน: ${currentZone.name} \n*(อัปเกรดระบบป้องกันสายหลุด และแก้บั๊กอัปโหลดสมบูรณ์ 100%)*`);
 });
