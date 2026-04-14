@@ -15,24 +15,41 @@ const c = { g: '\x1b[32m', b: '\x1b[36m', y: '\x1b[33m', r: '\x1b[31m', p: '\x1b
 const logTime = () => `[${new Date().toLocaleTimeString('th-TH')}]`;
 const startTime = Date.now();
 
-process.on('uncaughtException', (err) => { console.log(`${c.r}[Error] ${err.message}${c.rst}`); });
+process.on('uncaughtException', (err) => { console.log(`${c.r}[Fatal Error] ${err.message}${c.rst}`); });
 process.on('unhandledRejection', (reason) => { console.log(`${c.r}[Unhandled Promise] ${reason}${c.rst}`); });
 
 // ==========================================
 // ⚙️ SERVER CONFIG (ULTRA STABLE & ANTI-DROP)
 // ==========================================
 const PORT = 80; 
-const LIMIT_BYTES = 10 * 1024 * 1024; 
+const LIMIT_BYTES = 10 * 1024 * 1024; // 10MB Limit
 const ENABLE_WHITELIST = true; 
 
 const DISCORD_WEBHOOK_URL = "https://ptb.discord.com/api/webhooks/1493205171088523356/kZDhTcWxPUv9NNKG035D7Er7P2tJAL9Sh14v1OjzHyE_HmYcUNcw72mFj4QkTunS8UNA"; 
 const API_URL = "https://bigavatar.dpdns.org/api.php"; 
 const API_KEY = "5de1a6c187ba4e39165c60deee6f8f0f"; 
 
-// 🎨 [อัปเกรด] ข้อความ MOTD สวยงาม พรีเมียม และอ่านง่ายขึ้น
-const MOTD_MESSAGE = "§b§l★ §3§lBIGAVATAR §f§lCLOUD §b§l★\n§a✅ §aเชื่อมต่อเซิร์ฟเวอร์เสถียรระดับสูงสุดสำเร็จ!\n§e🔗 §eสามารถเข้าไปดูลายละเอียดได้ที่: §nhttps://dash.faydar.eu.cc";
+// 🌍 เลือกระบุ Zone ของเซิร์ฟเวอร์
+const SERVER_ZONE = "TH"; 
+const ZONE_INFO = {
+    "TH": { flag: "🇹🇭", name: "Thailand", ping: "< 20 ms" },
+    "SG": { flag: "🇸🇬", name: "Singapore", ping: "20-50 ms" },
+    "JP": { flag: "🇯🇵", name: "Japan", ping: "80-120 ms" },
+    "US": { flag: "🇺🇸", name: "United States", ping: "200+ ms" },
+    "EU": { flag: "🇪🇺", name: "Europe", ping: "150-250 ms" }
+};
+const currentZone = ZONE_INFO[SERVER_ZONE] || ZONE_INFO["TH"];
 
-// ⚡ ค่าที่ปรับจูนเพื่อแก้ปัญหา Cloud Disconnected (ขีดหลุดบ่อย)
+// 🎨 [อัปเกรด] ข้อความ MOTD สวยงาม พรีเมียม (ผู้เล่นจะเห็นตอนเข้าเกม)
+const MOTD_MESSAGE = `§b§l★ §3§lBIGAVATAR §f§lCLOUD §b§l★\n` +
+                     `§8§m----------------------------------------§r\n` +
+                     `§a✅ §aสถานะ: §fออนไลน์ (เสถียรภาพระดับสูงสุด)\n` +
+                     `§e🌍 §eโซนเซิร์ฟเวอร์: §f${currentZone.flag} ${currentZone.name} (Ping ${currentZone.ping})\n` +
+                     `§d🛡️ §dระบบป้องกัน: §fAnti-Drop & DDoS Protection ใช้งานอยู่\n` +
+                     `§c🔗 §cจัดการโมเดลของคุณได้ที่: §nhttps://dash.faydar.eu.cc\n` +
+                     `§8§m----------------------------------------§r`;
+
+// ⚡ ค่าปรับจูนเพื่อแก้ปัญหาเซิร์ฟกระตุกและเน็ตหลุด
 const SYNC_INTERVAL_MS = 10000;    
 const WS_PING_INTERVAL_MS = 15000; 
 const UPLOAD_TIMEOUT_MS = 30000;   
@@ -46,7 +63,7 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(cors());
 
-// 🛡️ แก้ไขปัญหา // ซ้อนกันใน URL
+// 🛡️ แก้ไขปัญหา URL มี // ซ้อนกัน (ป้องกัน Mod บั๊ก)
 app.use((req, res, next) => { 
     if (req.url.includes('//')) req.url = req.url.replace(/\/{2,}/g, '/'); 
     next(); 
@@ -70,7 +87,7 @@ let sqlWhitelist = new Set();
 let isSyncing = false; 
 let isMaintenanceMode = false; 
 
-// 💾 Local Database สำหรับสถิติ
+// 💾 ฐานข้อมูล Local
 const dbFile = path.join(__dirname, 'statsDB.json');
 let serverStats = { totalLogins: 0, totalUploads: 0, totalBytes: 0 };
 if (fs.existsSync(dbFile)) { try { serverStats = JSON.parse(fs.readFileSync(dbFile)); } catch(e) {} }
@@ -93,11 +110,26 @@ const formatUuid = (uuid) => {
     return `${uuid.slice(0, 8)}-${uuid.slice(8, 12)}-${uuid.slice(12, 16)}-${uuid.slice(16, 20)}-${uuid.slice(20)}`;
 };
 
+// 🧹 [อัปเกรด] ระบบล้างไฟล์ขยะและ Memory Leak (ป้องกันผู้เล่นผี)
 setInterval(async () => { 
     const now = Date.now();
+    
+    // เคลียร์ ID ที่หมดอายุ
     for (let [id, data] of server_ids.entries()) { if (now - data.time > 60000) server_ids.delete(id); }
     spamTracker.clear(); 
     saveStatsDB(); 
+
+    // ⚡ เคลียร์ Token ของคนที่ออกเกมไปนานกว่า 15 นาที (แก้บั๊กผู้เล่นผีค้างในระบบ)
+    for (const [tokenStr, userInfo] of tokens.entries()) {
+        if (now - userInfo.lastAccess > 15 * 60 * 1000) {
+            const uuid = userInfo.uuid;
+            if (!wsMap.has(uuid) || wsMap.get(uuid).size === 0) {
+                tokens.delete(tokenStr); // ล้างจาก RAM
+            }
+        }
+    }
+
+    // ล้างไฟล์อัปโหลดขยะที่ค้าง
     try {
         const files = await fsp.readdir(avatarsDir);
         for (const file of files) {
@@ -110,7 +142,7 @@ setInterval(async () => {
     } catch (e) {}
 }, 5 * 60 * 1000);
 
-// ⚡ ระบบ Sync (แยกระบบ Maintenance Mode ชัดเจน)
+// ⚡ ระบบ Sync อัจฉริยะ (แยก Maintenance กับ Whitelist ชัดเจน)
 async function syncAndMonitor() {
     if (isSyncing) return; 
     isSyncing = true;
@@ -146,7 +178,11 @@ async function syncAndMonitor() {
                 if (wsMap.has(userInfo.uuid)) { wsMap.get(userInfo.uuid).forEach(ws => ws.terminate()); wsMap.delete(userInfo.uuid); }
                 continue;
             }
-            onlineData.push({ name: userInfo.username, activity: userActivity.get(userInfo.username) || "Idle (ออนไลน์ปกติ)", last_size: userInfo.lastSize || 0 });
+
+            // ⚡ [แก้บั๊กคนค้าง] ส่งชื่อขึ้นหน้าเว็บเฉพาะคนที่มี WebSocket Active เท่านั้น!
+            if (wsMap.has(userInfo.uuid) && wsMap.get(userInfo.uuid).size > 0) {
+                onlineData.push({ name: userInfo.username, activity: userActivity.get(userInfo.username) || "Idle (ออนไลน์ปกติ)", last_size: userInfo.lastSize || 0 });
+            }
         }
         
         if (onlineData.length > 0 && !isMaintenanceMode) {
@@ -167,31 +203,27 @@ app.get('/api/server-stats', (req, res) => {
     if (req.query.pass !== DASHBOARD_PASS) return res.status(403).json({ error: "Unauthorized" });
     const uptimeSecs = Math.floor((Date.now() - startTime) / 1000);
     res.json({
-        onlinePlayers: tokens.size, totalLogins: serverStats.totalLogins, totalUploads: serverStats.totalUploads,
+        onlinePlayers: wsMap.size, // ⚡ นับผู้เล่นออนไลน์จาก Socket ที่ติดอยู่จริงๆ (แก้บั๊กตัวเลขลวง)
+        totalLogins: serverStats.totalLogins, totalUploads: serverStats.totalUploads,
         totalBytesMB: (serverStats.totalBytes / 1024 / 1024).toFixed(2), ramUsageMB: (process.memoryUsage().rss / 1024 / 1024).toFixed(2),
-        uptimeStr: `${Math.floor(uptimeSecs/3600)}h ${Math.floor((uptimeSecs%3600)/60)}m ${uptimeSecs%60}s`
+        uptimeStr: `${Math.floor(uptimeSecs/3600)}h ${Math.floor((uptimeSecs%3600)/60)}m ${uptimeSecs%60}s`,
+        zone: currentZone
     });
-});
-
-app.get('/dashboard', (req, res) => {
-    if (req.query.pass !== DASHBOARD_PASS) return res.send(`<h2>Access Denied.</h2>`);
-    res.send(`<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>BigAvatar Cloud - Dashboard</title><script src="https://cdn.tailwindcss.com"></script><style>body { background-color: #0f172a; color: #f8fafc; font-family: 'Inter', sans-serif; } .glass { background: rgba(30, 41, 59, 0.7); backdrop-filter: blur(10px); border: 1px solid rgba(255,255,255,0.1); } .glow-text { text-shadow: 0 0 10px rgba(56, 189, 248, 0.5); }</style></head><body class="min-h-screen p-8"><div class="max-w-5xl mx-auto"><header class="mb-10 text-center"><h1 class="text-4xl font-bold text-sky-400 glow-text mb-2">🚀 BIGAVATAR CLOUD</h1><p class="text-slate-400">V10 Ultimate - Server Monitor</p></header><div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8"><div class="glass rounded-2xl p-6 text-center transform transition hover:scale-105"><h3 class="text-slate-400 font-medium mb-1">🟢 Online Players</h3><p id="s-online" class="text-5xl font-bold text-emerald-400">0</p></div><div class="glass rounded-2xl p-6 text-center transform transition hover:scale-105"><h3 class="text-slate-400 font-medium mb-1">⚡ RAM Usage</h3><p id="s-ram" class="text-5xl font-bold text-amber-400">0 MB</p></div><div class="glass rounded-2xl p-6 text-center transform transition hover:scale-105"><h3 class="text-slate-400 font-medium mb-1">⏱️ Uptime</h3><p id="s-uptime" class="text-4xl font-bold text-sky-400 mt-2">0h 0m 0s</p></div><div class="glass rounded-2xl p-6 text-center transform transition hover:scale-105"><h3 class="text-slate-400 font-medium mb-1">👥 Total Logins</h3><p id="s-logins" class="text-4xl font-bold text-fuchsia-400 mt-2">0</p></div><div class="glass rounded-2xl p-6 text-center transform transition hover:scale-105"><h3 class="text-slate-400 font-medium mb-1">📤 Models Uploaded</h3><p id="s-uploads" class="text-4xl font-bold text-indigo-400 mt-2">0</p></div><div class="glass rounded-2xl p-6 text-center transform transition hover:scale-105"><h3 class="text-slate-400 font-medium mb-1">💾 Data Transferred</h3><p id="s-bytes" class="text-4xl font-bold text-rose-400 mt-2">0 MB</p></div></div><div class="text-center text-slate-500 text-sm mt-10">Auto-refreshing every 3 seconds</div></div><script> const urlParams = new URLSearchParams(window.location.search); const pass = urlParams.get('pass'); async function fetchStats() { try { const res = await fetch('/api/server-stats?pass=' + pass); const data = await res.json(); if(data.error) return; document.getElementById('s-online').innerText = data.onlinePlayers; document.getElementById('s-ram').innerText = data.ramUsageMB + ' MB'; document.getElementById('s-uptime').innerText = data.uptimeStr; document.getElementById('s-logins').innerText = data.totalLogins.toLocaleString(); document.getElementById('s-uploads').innerText = data.totalUploads.toLocaleString(); document.getElementById('s-bytes').innerText = data.totalBytesMB + ' MB'; } catch(e) {} } fetchStats(); setInterval(fetchStats, 3000); </script></body></html>`);
 });
 
 app.get('/api/motd', (req, res) => res.status(200).send(MOTD_MESSAGE));
 app.get('/api/version', (req, res) => res.json({"release":"0.1.5", "prerelease":"0.1.5"}));
 
-// ✅ [สมบูรณ์] คืนค่า allowedBadges กัน Mod หาไม่เจอ
 app.get('/api/limits', (req, res) => res.json({"rate": { "pingSize": 1048576, "pingRate": 4096, "equip": 0, "download": 999999999999, "upload": 99999999999 }, "limits": { "maxAvatarSize": LIMIT_BYTES, "maxAvatars": 100, "allowedBadges": { "special": Array(15).fill(0), "pride": Array(30).fill(0) } }}));
 
 app.get('/api/auth/id', (req, res) => {
     const uname = req.query.username?.toLowerCase();
     if (!uname) return res.status(400).end();
 
-    if (isMaintenanceMode) return res.status(403).send("§e⚠ เซิร์ฟเวอร์อยู่ในโหมดปิดปรับปรุง (Maintenance)");
+    if (isMaintenanceMode) return res.status(403).send("§e⚠ เซิร์ฟเวอร์อยู่ในโหมดปิดปรับปรุง (Maintenance Mode)");
     
-    if (sqlBlacklist.has(uname)) return res.status(403).send("ถูกแบนถาวร");
-    if (ENABLE_WHITELIST && !sqlWhitelist.has(uname)) return res.status(403).send("ไม่มีรายชื่อ");
+    if (sqlBlacklist.has(uname)) return res.status(403).send("§cถูกแบนถาวร");
+    if (ENABLE_WHITELIST && !sqlWhitelist.has(uname)) return res.status(403).send("§cไม่มีรายชื่ออนุญาต (Not Whitelisted)");
 
     const serverID = crypto.randomBytes(16).toString('hex');
     server_ids.set(serverID, { username: req.query.username, time: Date.now() });
@@ -212,12 +244,13 @@ app.get('/api/auth/verify', async (req, res) => {
         const premiumUuid = formatUuid(hexUuid);
         const hexUuidBuffer = Buffer.from(hexUuid, 'hex'); 
 
-        // ✅ [สมบูรณ์] คืนค่า clientIp และ projectInfo สำหรับเก็บสถิติ
+        // ✅ บันทึกข้อมูลและเวลาที่แอคทีฟล่าสุด
         tokens.set(token, { 
             uuid: premiumUuid, hexUuid: hexUuid, hexUuidBuffer: hexUuidBuffer, username: response.data.name, 
             clientIp: req.headers['x-forwarded-for'] || req.socket.remoteAddress,
             projectInfo: req.headers['user-agent'] || 'Unknown Tool',
-            lastSize: 0 
+            lastSize: 0,
+            lastAccess: Date.now() 
         });
         
         serverStats.totalLogins++;
@@ -231,6 +264,8 @@ app.get('/api/auth/verify', async (req, res) => {
 app.post('/api/equip', (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end(); 
+    
+    userInfo.lastAccess = Date.now(); // อัปเดตเวลาคนเข้า
     userActivity.set(userInfo.username, "👕 กำลังสวมใส่ชุด...");
     
     if (wsMap.has(userInfo.uuid)) {
@@ -245,14 +280,16 @@ app.put('/api/avatar', async (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end();
     
+    userInfo.lastAccess = Date.now(); 
     let contentLength = parseInt(req.headers['content-length'] || '0');
     userInfo.lastSize = contentLength;
     
+    // 🛡️ ป้องกันระบบสแปม (ลบพวกพยายามยัดไฟล์ใหญ่รัวๆ)
     if (contentLength > LIMIT_BYTES) {
         let strikes = (spamTracker.get(userInfo.username) || 0) + 1;
         spamTracker.set(userInfo.username, strikes);
         if (strikes >= 3) {
-            sendToDiscord(`🚨 **[ป้องกัน]** \`${userInfo.username}\` สแปมไฟล์ใหญ่ (แบนชั่วคราว)`);
+            sendToDiscord(`🚨 **[ป้องกัน]** \`${userInfo.username}\` สแปมไฟล์ใหญ่เกิน 10MB รัวๆ (โดนเตะชั่วคราว)`);
             sqlBlacklist.add(userInfo.username.toLowerCase()); 
         }
         return res.status(413).end();
@@ -297,6 +334,7 @@ app.delete('/api/avatar', async (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end();
     try {
+        userInfo.lastAccess = Date.now();
         await fsp.unlink(path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`)); 
         hashCache.delete(userInfo.uuid);
         saveCache();
@@ -311,7 +349,6 @@ app.delete('/api/avatar', async (req, res) => {
 
 app.get('/api/:uuid/avatar', async (req, res) => { 
     const uuidStr = req.params.uuid;
-    // ✅ [สมบูรณ์] เพิ่ม stats-secret และตัวอื่นๆ ไม่ให้ Mod บั๊กตอนหาข้อมูล
     if (["motd", "version", "auth", "limits", "stats-secret"].includes(uuidStr)) return res.status(404).end();
     const avatarFile = path.join(__dirname, 'avatars', `${formatUuid(uuidStr)}.moon`);
     try {
@@ -324,7 +361,6 @@ app.get('/api/:uuid/avatar', async (req, res) => {
 
 app.get('/api/:uuid', async (req, res) => {
     const uuidStr = req.params.uuid;
-    // ✅ [สมบูรณ์] เพิ่ม stats-secret เช่นกัน
     if (["motd", "version", "auth", "limits", "stats-secret"].includes(uuidStr)) return res.status(404).end();
     const uuid = formatUuid(uuidStr);
     if (!uuid) return res.status(404).end();
@@ -351,7 +387,7 @@ app.get('/api/:uuid', async (req, res) => {
 app.get('/', (req, res) => { res.status(200).send(MOTD_MESSAGE); });
 
 // ==========================================
-// ⚡ WEBSOCKET 
+// ⚡ WEBSOCKET (ป้องกันอาการหลุดแบบสมบูรณ์)
 // ==========================================
 const server = http.createServer(app);
 server.keepAliveTimeout = 60000; 
@@ -380,6 +416,8 @@ wss.on('connection', (ws) => {
                 if (data.length < 6) return; 
                 const userInfo = tokens.get(tokenMap.get(ws));
                 if (!userInfo) return;
+                
+                userInfo.lastAccess = Date.now(); // ⚡ อัปเดตเวลาคนขยับตัว
                 
                 const newbuffer = Buffer.allocUnsafe(22 + (data.length - 6));
                 newbuffer.writeUInt8(0, 0); 
@@ -436,11 +474,11 @@ wss.on('close', () => clearInterval(interval));
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`\n${c.p}==========================================${c.rst}`);
-    console.log(`${c.b}✨ BIGAVATAR CLOUD - V10 (ANTI-DROP EDITION)${c.rst}`);
+    console.log(`${c.b}✨ BIGAVATAR CLOUD - V10 (ULTIMATE STABLE)${c.rst}`);
     console.log(`${c.g}✅ API Link: ${API_URL}${c.rst}`);
-    console.log(`${c.y}⚡ Stability Ping & Sync Adjusted (No Disconnects)${c.rst}`);
+    console.log(`${c.g}🌍 Server Region: ${currentZone.name} ${currentZone.flag}${c.rst}`);
+    console.log(`${c.y}⚡ Memory Leak Protection Active${c.rst}`);
     console.log(`${c.y}⚡ Maintenance Mode Support Active${c.rst}`);
-    console.log(`${c.y}🎨 Custom MOTD Active${c.rst}`);
     console.log(`${c.p}==========================================${c.rst}\n`);
-    sendToDiscord("✅ **[อัปเดตระบบ]** เซิร์ฟเวอร์ Figura ออนไลน์ (แก้ไขปัญหาเน็ตหลุด & โหมดปิดปรับปรุง & อัปเกรด MOTD)!");
+    sendToDiscord(`✅ **[อัปเดตระบบ]** เซิร์ฟเวอร์ Figura ออนไลน์ 🌍 โซน: ${currentZone.flag} (ป้องกันเน็ตหลุด & ล้างผู้เล่นผีแล้ว)!`);
 });
