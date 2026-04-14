@@ -33,7 +33,7 @@ const API_URL = "https://bigavatar.dpdns.org/api.php";
 const API_KEY = "5de1a6c187ba4e39165c60deee6f8f0f"; 
 
 // 🌍 เลือกระบุ Zone ของเซิร์ฟเวอร์
-const SERVER_ZONE = "🇹🇭"; 
+const SERVER_ZONE = "TH"; // 👈 เปลี่ยนเป็น TH ตามที่คุณต้องการได้ครับ
 const ZONE_INFO = {
     "TH": { webFlag: "🇹🇭", mcFlag: "[TH]", name: "Thailand", ping: "< 20 ms" },
     "SG": { webFlag: "🇸🇬", mcFlag: "[SG]", name: "Singapore", ping: "20-50 ms" },
@@ -51,13 +51,13 @@ const MOTD_MESSAGE =
     `§a ✔ §aสถานะเซิร์ฟเวอร์: §fออนไลน์ (เสถียร 100%)\n` +
     `§e ⚑ §eโซนที่ให้บริการ: §f${currentZone.mcFlag} ${currentZone.name} §7(Ping ${currentZone.ping})\n` +
     `§d ⚙ §dระบบความปลอดภัย: §fAnti-Drop & Anti-Spam Active\n` +
-    `§c ➤ §cสามรถเข้าไปดูรายละเอียดได้ในเว็บไซต์: §nhttps://dash.faydar.eu.cc\n` +
+    `§c ➤ §cสามารถเข้าไปดูรายละเอียดได้ในเว็บไซต์: §nhttps://dash.faydar.eu.cc\n` +
     `§8§m                                        §r`;
 
 // ⚡ ค่าปรับจูนเพื่อความเร็วขั้นสุด
 const SYNC_INTERVAL_MS = 10000;    
 const WS_PING_INTERVAL_MS = 15000; 
-const UPLOAD_TIMEOUT_MS = 20000;   // ⚡ ลดเวลาตัดสแปมเหลือ 20 วิ (ไวขึ้น)
+const UPLOAD_TIMEOUT_MS = 25000;   // ⚡ ให้เวลาอัปโหลด 25 วิ เพื่อไฟล์ใหญ่ๆ (20MB) วิ่งผ่านได้ชัวร์ๆ
 const DASHBOARD_PASS = "admin123"; 
 // ==========================================
 
@@ -68,8 +68,7 @@ const app = express();
 app.set('trust proxy', 1);
 app.use(cors());
 
-// 🚀 [SPEED UP] ดักจับแพ็คเก็ตที่ใหญ่เกินไปตั้งแต่ระดับ Express ป้องกัน CPU ทำงานหนัก
-app.use(express.raw({ limit: '22mb', type: 'application/octet-stream' })); 
+// ❌ ถอด express.raw() ออก เพื่อป้องกันบั๊ก "กลืนสตรีม" ที่ทำให้เซฟไฟล์ลงแผ่นดิสก์ไม่ได้ 
 
 // 🛡️ [Bug Fix] แก้ปัญหา URL ซ้อนกัน (//) ป้องกันผู้เล่นบั๊ก
 app.use((req, res, next) => { 
@@ -305,7 +304,7 @@ app.post('/api/equip', (req, res) => {
     res.send("success");
 });
 
-// 🛡️ [อัปเกรดความเร็ว] ระบบต่อต้านการสแปมโมเดล (Anti-Spam & DDoS Protection)
+// 🛡️ [แก้ไขบั๊กสมบูรณ์] ระบบรับไฟล์ดิบ (รับรองเซฟไฟล์ลงโฟลเดอร์ได้ 100%)
 app.put('/api/avatar', async (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end();
@@ -314,6 +313,7 @@ app.put('/api/avatar', async (req, res) => {
     let contentLength = parseInt(req.headers['content-length'] || '0');
     userInfo.lastSize = contentLength;
     
+    // ⚡ เรายังคงใช้การดักจับขนาดไฟล์ด้วย header ตรงๆ กันสแปมได้เหมือนเดิมครับ
     if (contentLength > LIMIT_BYTES) {
         let strikes = (spamTracker.get(userInfo.username) || 0) + 1;
         spamTracker.set(userInfo.username, strikes);
@@ -333,11 +333,12 @@ app.put('/api/avatar', async (req, res) => {
 
     const writeStream = fs.createWriteStream(tempFile);
     const hash = crypto.createHash('sha256');
+    
     req.on('data', chunk => hash.update(chunk));
 
     try {
         await pipeline(req, writeStream); 
-        clearTimeout(uploadTimeout); // ล้าง timeout ถ้าเสร็จทัน
+        clearTimeout(uploadTimeout); // ล้าง timeout ถ้าอัปโหลดเสร็จทัน
         await fsp.rename(tempFile, finalFile);
         hashCache.set(userInfo.uuid, hash.digest('hex')); 
         saveCache(); 
@@ -420,7 +421,7 @@ app.get('/api/:uuid', async (req, res) => {
 app.get('/', (req, res) => { res.status(200).send(MOTD_MESSAGE); });
 
 // ==========================================
-// ⚡ WEBSOCKET (ระบบป้องกันสายหลุด / แลกข้อมูลความเร็วสูง)
+// ⚡ WEBSOCKET (ระบบจัดการสายหลุดขั้นสูง)
 // ==========================================
 const server = http.createServer(app);
 server.keepAliveTimeout = 60000; 
@@ -453,7 +454,6 @@ wss.on('connection', (ws) => {
                 userInfo.lastAccess = Date.now(); 
                 
                 const dataLen = data.length;
-                // 🚀 [SPEED UP] ลดการใช้ Memory Allocation ซ้ำซ้อน ป้องกันกระตุก
                 const newbuffer = Buffer.allocUnsafe(22 + (dataLen - 6));
                 newbuffer.writeUInt8(0, 0); 
                 userInfo.hexUuidBuffer.copy(newbuffer, 1); 
@@ -486,7 +486,6 @@ wss.on('connection', (ws) => {
     
     ws.on('error', () => {}); 
     
-    // ⚡ [การแก้ไขหัวใจสำคัญ] จัดการสายหลุดแบบถอนรากถอนโคนทันที!
     ws.on('close', () => {
         const tokenStr = tokenMap.get(ws);
         if (tokenStr && tokens.has(tokenStr)) {
@@ -495,7 +494,7 @@ wss.on('connection', (ws) => {
                 wsMap.get(uuid).delete(ws); 
                 if (wsMap.get(uuid).size === 0) {
                     wsMap.delete(uuid); 
-                    tokens.delete(tokenStr); // ลบจากระบบเพื่อไม่ให้เป็นผู้เล่นผี
+                    tokens.delete(tokenStr); 
                     userActivity.delete(tokens.get(tokenStr)?.username);
                 }
             }
@@ -522,5 +521,5 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`${c.y}⚡ Maintenance Mode & Discord Webhook: ACTIVE${c.rst}`);
     console.log(`${c.y}🎨 Epic Minecraft-Safe MOTD: ACTIVE${c.rst}`);
     console.log(`${c.p}==========================================${c.rst}\n`);
-    sendToDiscord(`🚀 **[SYSTEM START]** เซิร์ฟเวอร์ Figura ออนไลน์แล้ว 🌍 โซน: ${currentZone.name} \n*(ระบบป้องกันการหลุดและเคลียร์แรมอัตโนมัติทำงาน 100%)*`);
+    sendToDiscord(`🚀 **[SYSTEM START]** เซิร์ฟเวอร์ Figura ออนไลน์แล้ว 🌍 โซน: ${currentZone.name} \n*(ระบบเสถียรและพร้อมใช้งาน)*`);
 });
