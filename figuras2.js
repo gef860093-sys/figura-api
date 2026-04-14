@@ -51,7 +51,7 @@ const MOTD_MESSAGE =
     `§a ✔ §aสถานะเซิร์ฟเวอร์: §fออนไลน์ (เสถียร 100%)\n` +
     `§e ⚑ §eโซนที่ให้บริการ: §f${currentZone.mcFlag} ${currentZone.name} §7(Ping ${currentZone.ping})\n` +
     `§d ⚙ §dระบบความปลอดภัย: §fAnti-Drop & Anti-Spam Active\n` +
-    `§c ➤ §cจัดการโมเดลที่เว็บ: §nhttps://dash.faydar.eu.cc\n` +
+    `§c ➤ §cสามรถเข้าไปดูรายละเอียดได้ในเว็บไซต์: §nhttps://dash.faydar.eu.cc\n` +
     `§8§m                                        §r`;
 
 // ⚡ ค่าปรับจูนเพื่อความเร็วขั้นสุด
