@@ -32,7 +32,7 @@ process.on('unhandledRejection', (reason) => { console.error(`${c.r}${logTime()}
 // ⚙️ SERVER CONFIG (V16 FLAWLESS ENTERPRISE)
 // ==========================================
 const PORT = 80; 
-const LIMIT_BYTES = 30 * 1024 * 1024; // ลิมิตขนาด 30MB
+const LIMIT_BYTES = 35 * 1024 * 1024; // ลิมิตขนาด 30MB
 const ENABLE_WHITELIST = true; 
 
 const DISCORD_WEBHOOK_URL = "https://ptb.discord.com/api/webhooks/1493712415831887955/-DO5NvlZUp83EDkr7JQb13QHdrTNeveugQwXy2Ni74fxxbbw4PYcuQHqoUgs2Q7cOaz-"; 
@@ -51,7 +51,7 @@ const MOTD_MESSAGE =
     `§8§m                                        §r\n` +
     `  §3§l✦ §b§lB§3§lI§b§lG§3§lA§b§lV§3§lA§b§lT§3§lA§b§lR §f§lC§7§lL§f§lO§7§lU§f§lD §b§l✦\n` +
     `§8§m                                        §r\n` +
-    `§a ✔ §aสถานะ: §fออนไลน์ (Performance ระดับ 5 ดาว)\n` +
+    `§a ✔ §aสถานะ: §fออนไลน์ (Performance)\n` +
     `§e ⚑ §eโซนเซิร์ฟเวอร์: §f${currentZone.mcFlag} ${currentZone.name} §7(Ping ${currentZone.ping})\n` +
     `§d ⚙ §dระบบป้องกัน: §fAnti-Drop & Event-Loop Optimized\n` +
     `§c ➤ §cรายละเอียดเพิ่มเติมที่: §nhttps://dash.faydar.eu.cc\n` +
