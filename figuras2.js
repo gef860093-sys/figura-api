@@ -24,7 +24,7 @@ process.on('unhandledRejection', (reason) => { console.log(`${c.r}[Unhandled Pro
 // ⚙️ SERVER CONFIG (ULTRA STABLE & ANTI-DROP)
 // ==========================================
 const PORT = 80; 
-const LIMIT_BYTES = 10 * 1024 * 1024; // ลิมิตขนาดโมเดลสูงสุด 10MB
+const LIMIT_BYTES = 20 * 1024 * 1024; // ลิมิตขนาดโมเดลสูงสุด 20MB
 const ENABLE_WHITELIST = true; 
 
 // 💬 ระบบแจ้งเตือน Discord
