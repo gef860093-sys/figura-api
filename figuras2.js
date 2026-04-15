@@ -8,6 +8,7 @@ const path = require('path');
 const fs = require('fs');
 const fsp = require('fs/promises');
 const { pipeline } = require('stream/promises');
+const { Transform } = require('stream'); // 👈 เพิ่มโมดูล Transform สำหรับจัดการ Stream
 const cors = require('cors');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit'); 
@@ -380,7 +381,7 @@ app.post('/api/equip', authMiddleware, (req, res) => {
     res.send("success");
 });
 
-// 🌊 [เพิ่มระบบ 3] Zero-RAM Stream Engine: รับไฟล์ใหญ่โดยไม่ต้องโหลดเข้า RAM ทีเดียว 
+// 🌊 [แก้ไขระบบ 3] Zero-RAM Stream Engine (เวอร์ชันแก้บัคสมบูรณ์)
 app.put('/api/avatar', authMiddleware, async (req, res) => {
     const userInfo = req.userInfo;
     userInfo.lastAccess = Date.now(); 
@@ -392,33 +393,25 @@ app.put('/api/avatar', authMiddleware, async (req, res) => {
     const hash = crypto.createHash('sha256');
     let uploadedBytes = 0;
 
-    // คำนวณขนาดและ Hash ไปพร้อมๆ กับการสตรีม (สุดยอดแห่งการประหยัด RAM)
-    req.on('data', chunk => {
-        uploadedBytes += chunk.length;
-        if (uploadedBytes > LIMIT_BYTES) {
-            req.destroy(); // เตะทิ้งทันทีถ้ายัดไฟล์ใหญ่กว่า 35MB
-        } else {
+    // ใช้ Transform Stream ดักข้อมูลระหว่างทาง
+    const processStream = new Transform({
+        transform(chunk, encoding, callback) {
+            uploadedBytes += chunk.length;
+            if (uploadedBytes > LIMIT_BYTES) {
+                return callback(new Error('LIMIT_EXCEEDED')); // ตัดจบถ้าไฟล์ใหญ่เกิน
+            }
             hash.update(chunk);
+            callback(null, chunk);
         }
     });
 
     try {
-        await pipeline(req, writeStream);
+        // ให้ข้อมูลไหลผ่าน: Request -> ตัวดักจับ -> ไฟล์ชั่วคราว
+        await pipeline(req, processStream, writeStream);
 
         if (uploadedBytes === 0) {
             await fsp.unlink(tempFile).catch(()=>{});
             return res.status(400).send({ error: "Empty file upload" });
-        }
-
-        if (uploadedBytes > LIMIT_BYTES) {
-            await fsp.unlink(tempFile).catch(()=>{});
-            let strikes = (spamTracker.get(userInfo.username) || 0) + 1;
-            spamTracker.set(userInfo.username, strikes);
-            if (strikes >= 3) {
-                bannedIPs.set(req.clientIp, Date.now() + 15 * 60 * 1000); // 🛡️ แบน IP 15 นาที
-                sendToDiscord(`🚨 **[Auto-Ban]** ผู้เล่น \`${userInfo.username}\` ถูกแบน IP 15 นาที ฐานสแปมไฟล์ใหญ่`);
-            }
-            return res.status(413).end();
         }
 
         const finalHash = hash.digest('hex');
@@ -427,7 +420,7 @@ app.put('/api/avatar', authMiddleware, async (req, res) => {
         userInfo.lastSize = uploadedBytes;
         hashCache.set(userInfo.uuid, finalHash); 
         apiJsonCache.delete(userInfo.uuid); 
-        saveCache(); 
+        // ❌ นำ saveCache(); ออกแล้ว เพื่อป้องกัน ReferenceError
 
         serverStats.totalUploads++; serverStats.totalBytes += uploadedBytes; saveStatsDB();
         userActivity.set(userInfo.username, "✅ โมเดลพร้อมใช้งาน");
@@ -439,6 +432,18 @@ app.put('/api/avatar', authMiddleware, async (req, res) => {
         res.send("success"); 
     } catch (err) {
         await fsp.unlink(tempFile).catch(()=>{});
+        
+        // จัดการกรณีไฟล์ใหญ่เกิน (Spam Protection)
+        if (err.message === 'LIMIT_EXCEEDED') {
+            let strikes = (spamTracker.get(userInfo.username) || 0) + 1;
+            spamTracker.set(userInfo.username, strikes);
+            if (strikes >= 3) {
+                bannedIPs.set(req.clientIp, Date.now() + 15 * 60 * 1000); 
+                sendToDiscord(`🚨 **[Auto-Ban]** ผู้เล่น \`${userInfo.username}\` ถูกแบน IP 15 นาที ฐานสแปมไฟล์ใหญ่`);
+            }
+            return res.status(413).end();
+        }
+
         logger.error(`${c.r}[Upload Error] ${err.message}${c.rst}`);
         if (!res.headersSent) res.status(500).send({ error: "Upload failed" });
     }
@@ -451,7 +456,8 @@ app.delete('/api/avatar', authMiddleware, async (req, res) => {
         userActivity.set(userInfo.username, "🗑️ ลบโมเดล");
         await fsp.unlink(path.join(avatarsDir, `${userInfo.uuid}.moon`)); 
         
-        hashCache.delete(userInfo.uuid); apiJsonCache.delete(userInfo.uuid); saveCache();
+        hashCache.delete(userInfo.uuid); apiJsonCache.delete(userInfo.uuid); 
+        // ❌ นำ saveCache(); ออกแล้ว
         
         const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); 
         userInfo.hexUuidBuffer.copy(buffer, 1); 
