@@ -88,7 +88,7 @@ app.use((req, res, next) => {
     next(); 
 });
 
-// ✅ [Fix 10] ป้องกัน Request ค้าง (Timeout)
+// ✅ ป้องกัน Request ค้าง (Timeout)
 app.use((req, res, next) => {
     res.setTimeout(15000, () => {
         res.status(408).end();
@@ -96,10 +96,7 @@ app.use((req, res, next) => {
     next();
 });
 
-// ❌ [Fix 6] ปิด express.raw({ limit: '32mb' }) เพื่อไม่ให้โหลดเข้า RAM ทั้งก้อน
-// เราจะใช้ stream pipeline รับไฟล์แทนใน route PUT /api/avatar
-
-// ✅ [Fix 5] ปรับ Rate Limit ให้พอดี ป้องกัน Bot ยิง
+// ✅ ปรับ Rate Limit ให้พอดี ป้องกัน Bot ยิง
 const apiLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 300, message: { error: "Rate Limit Exceeded" } });
 app.use('/api/', apiLimiter);
 
@@ -108,7 +105,7 @@ app.use('/api/', apiLimiter);
 // ==========================================
 const server_ids = new Map();
 const tokens = new Map();
-const tokenMap = new Map(); // ✅ [Fix 2] เปลื่ยนจาก WeakMap เป็น Map
+const tokenMap = new Map(); 
 const wsMap = new Map(); 
 let hashCache = new Map(); 
 let apiJsonCache = new Map(); 
@@ -146,19 +143,17 @@ const formatUuid = (uuid) => {
     return `${clean.slice(0, 8)}-${clean.slice(8, 12)}-${clean.slice(12, 16)}-${clean.slice(16, 20)}-${clean.slice(20)}`;
 };
 
-// 🧹 Advanced Garbage Collection
+// 🧹 Advanced Garbage Collection (Memory Leak Proofing v2)
 const gcInterval = setInterval(async () => { 
     const now = Date.now();
     for (let [id, data] of server_ids.entries()) { if (now - data.time > 60000) server_ids.delete(id); }
     spamTracker.clear(); 
     saveStatsDB(); 
 
-    // ✅ [Fix 9] กัน hashCache โตไม่หยุดจน RAM leak
     if (hashCache.size > 5000) {
         hashCache.clear();
     }
 
-    // ✅ [Fix 3] เคลียร์ wsMap และ Tokens ที่ค้าง (Sync)
     for (const [uuid, sockets] of wsMap.entries()) {
         if (sockets.size === 0) {
             wsMap.delete(uuid);
@@ -332,7 +327,6 @@ app.post('/api/equip', (req, res) => {
     res.send("success");
 });
 
-// ✅ [Fix 6] ใช้ Stream แทนการโหลดลง RAM (ป้องกัน RAM ระเบิด)
 app.put('/api/avatar', async (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end();
@@ -343,8 +337,13 @@ app.put('/api/avatar', async (req, res) => {
     const tempFile = path.join(avatarsDir, `${userInfo.uuid}_${Date.now()}.tmp`);
     const finalFile = path.join(avatarsDir, `${userInfo.uuid}.moon`);
 
+    // ✅ [Aborted Connection Cleanup] ลบไฟล์ Temp ทิ้งทันทีหากเน็ตผู้เล่นหลุด/กดยกเลิก
+    req.on('aborted', () => { fsp.unlink(tempFile).catch(()=>{}); });
+    req.on('close', () => { 
+        fsp.access(tempFile).then(() => { fsp.unlink(tempFile).catch(()=>{}); }).catch(()=>{}); 
+    });
+
     try {
-        // ใช้ stream รับไฟล์ตรงๆ เขียนลงดิสก์
         await pipeline(req, fs.createWriteStream(tempFile));
 
         const stats = await fsp.stat(tempFile);
@@ -363,7 +362,6 @@ app.put('/api/avatar', async (req, res) => {
             return res.status(400).send({ error: "Invalid file" });
         }
 
-        // อ่านเพื่อสร้าง Hash อย่างปลอดภัย หลังจากที่เขียนเป็นไฟล์แล้ว
         const fileBuffer = await fsp.readFile(tempFile);
         const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
         
@@ -487,8 +485,11 @@ const wss = new WebSocket.Server({
     clientTracking: true
 });
 
-// ✅ [Fix 8] ตั้งลิมิต WS สูงสุด กันโดนยิง
 const MAX_WS = 5000;
+const RATE_LIMIT_WS_MSGS = 50; // ✅ จำกัดการส่งแพ็กเก็ต 50 ครั้ง/วินาที
+
+// ตัวเคลียร์ Rate Limit ทุกๆ 1 วินาที
+setInterval(() => { wss.clients.forEach(ws => { ws.msgCount = 0; }); }, 1000);
 
 wss.on('connection', (ws) => {
     if (wss.clients.size > MAX_WS) {
@@ -498,6 +499,7 @@ wss.on('connection', (ws) => {
 
     ws.isAlive = true; 
     ws.missedPings = 0; 
+    ws.msgCount = 0; // ✅ เริ่มต้นการนับข้อความ
     
     ws.on('pong', () => { 
         ws.isAlive = true; 
@@ -506,6 +508,12 @@ wss.on('connection', (ws) => {
 
     ws.on('message', (data) => {
         try {
+            // ✅ [WS Flood Protection] ป้องกันคนจงใจยิงสแปม
+            ws.msgCount++;
+            if (ws.msgCount > RATE_LIMIT_WS_MSGS) {
+                return ws.terminate(); // เตะทิ้งทันทีถ้ารัวเกินลิมิต
+            }
+
             if (!Buffer.isBuffer(data) || data.length < 1 || data.length > 1048576) return; 
 
             const type = data[0];
@@ -514,7 +522,9 @@ wss.on('connection', (ws) => {
                 if (ws.readyState === 1) ws.send(Buffer.from([0]), { binary: true });
             }
             else if (type === 1) { 
-                if (data.length < 6) return; 
+                // ✅ [Strict Buffer Bound Check] ตรวจจับความยาวแพ็กเก็ตให้ชัวร์
+                if (data.length < 10) return; 
+                
                 const userInfo = tokens.get(tokenMap.get(ws));
                 if (!userInfo) return;
                 
@@ -524,22 +534,26 @@ wss.on('connection', (ws) => {
                 const newbuffer = Buffer.allocUnsafe(22 + (dataLen - 6));
                 newbuffer.writeUInt8(0, 0); 
                 userInfo.hexUuidBuffer.copy(newbuffer, 1); 
-                newbuffer.writeInt32BE(data.readInt32BE(1), 17); 
                 
-                const isGlobal = data.readUInt8(5) !== 0 ? 1 : 0;
-                newbuffer.writeUInt8(isGlobal, 21); 
-                data.slice(6).copy(newbuffer, 22);
+                // try-catch เสริมกันเหนียวเผื่อข้อมูลพังระหว่างทาง
+                try {
+                    newbuffer.writeInt32BE(data.readInt32BE(1), 17); 
+                    const isGlobal = data.readUInt8(5) !== 0 ? 1 : 0;
+                    newbuffer.writeUInt8(isGlobal, 21); 
+                    data.slice(6).copy(newbuffer, 22);
+                } catch (bufferErr) {
+                    return; // ถ้าแพ็กเก็ตอ่านไม่ได้ ให้เมินไปเลย ไม่ต้อง Crash
+                }
                 
                 const connections = wsMap.get(userInfo.uuid);
                 if (connections) { 
-                    // ✅ [Fix 4] Broadcast พังเวลา ws error แก้ด้วยการเช็คและเตะทิ้งถ้า Error
                     connections.forEach(tws => { 
                         if (tws.readyState !== 1) {
                             connections.delete(tws);
                             return;
                         }
                         try {
-                            if ((isGlobal === 1 || tws !== ws) && tws.bufferedAmount < 1048576) {
+                            if ((data.readUInt8(5) !== 0 ? 1 : 0 === 1 || tws !== ws) && tws.bufferedAmount < 1048576) {
                                 tws.send(newbuffer, { binary: true });
                             } 
                         } catch (err) {
@@ -559,7 +573,9 @@ wss.on('connection', (ws) => {
                     if (wsMap.has(uuid)) wsMap.get(uuid).delete(ws); 
                 }
             }
-        } catch (e) {} 
+        } catch (e) {
+            // จับ Error เงียบๆ ไม่ให้ทะลุไปถึง uncaughtException
+        } 
     });
     
     ws.on('error', () => {}); 
@@ -573,13 +589,11 @@ wss.on('connection', (ws) => {
             const uuid = userInfo.uuid;
             if (wsMap.has(uuid)) { 
                 wsMap.get(uuid).delete(ws); 
-                // ✅ [Fix 1] นำ tokens.delete(tokenStr) ออก ให้ GC จัดการ เพื่อไม่ให้หลุดมั่ว
             }
         }
     });
 });
 
-// ✅ [Fix 7] ปรับ Ping logic ให้เสถียรขึ้น เตะคนผิดน้อยลง
 const wsPingInterval = setInterval(() => { 
     wss.clients.forEach((ws) => { 
         if (!ws.isAlive) {
@@ -620,12 +634,13 @@ process.on('SIGINT', shutdown);
 
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`\n${c.p}==========================================${c.rst}`);
-    console.log(`${c.b}✨ BIGAVATAR CLOUD (ULTRA-ENGINE)${c.rst}`);
+    console.log(`${c.b}✨ BIGAVATAR CLOUD (ULTIMATE-STABILITY)${c.rst}`);
     console.log(`${c.g}✅ API Link: ${API_URL}${c.rst}`);
     console.log(`${c.g}🌍 Server Region: ${currentZone.name} ${currentZone.mcFlag}${c.rst}`);
-    console.log(`${c.y}🛡️ Atomic File Save (Fix Model Corruptions): ACTIVE${c.rst}`);
-    console.log(`${c.y}🛡️ WS Payload Cap (Anti-Memory Crash): ACTIVE${c.rst}`);
+    console.log(`${c.y}🛡️ WS Anti-Spam (Flood Protection): ACTIVE${c.rst}`);
+    console.log(`${c.y}🗑️ Aborted Stream Cleanup (RAM Saver): ACTIVE${c.rst}`);
+    console.log(`${c.y}🛡️ Strict Buffer Checking: ACTIVE${c.rst}`);
     console.log(`${c.y}⚡ Lag-Spike Tolerance (No Disconnects): ACTIVE${c.rst}`);
     console.log(`${c.p}==========================================${c.rst}\n`);
-    sendToDiscord(`🚀 **[SYSTEM START]** เซิร์ฟเวอร์ Figura ออนไลน์แล้ว! 🌍 โซน: ${currentZone.name}`);
+    sendToDiscord(`🚀 **[SYSTEM START]** เซิร์ฟเวอร์ Figura ออนไลน์แล้วพร้อมระบบ Ultimate Stability! 🌍 โซน: ${currentZone.name}`);
 });
