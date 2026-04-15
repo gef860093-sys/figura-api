@@ -7,6 +7,7 @@ const axios = require('axios');
 const path = require('path');
 const fs = require('fs');
 const fsp = require('fs/promises');
+const { pipeline } = require('stream/promises');
 const cors = require('cors');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit'); 
@@ -25,20 +26,26 @@ const c = { g: '\x1b[32m', b: '\x1b[36m', y: '\x1b[33m', r: '\x1b[31m', p: '\x1b
 const logTime = () => `[${new Date().toLocaleTimeString('th-TH')}]`;
 const startTime = Date.now();
 
-const logFile = fs.createWriteStream(path.join(__dirname, 'server.log'), { flags: 'a' });
-const logger = {
-    info: (msg) => { console.log(msg); logFile.write(`INFO ${logTime()}: ${msg.replace(/\x1b\[[0-9;]*m/g, '')}\n`); },
-    error: (msg) => { console.error(msg); logFile.write(`ERROR ${logTime()}: ${msg.replace(/\x1b\[[0-9;]*m/g, '')}\n`); }
+// 📅 [เพิ่มระบบ 1] Daily Log Rotation: แยกไฟล์ Log ตามวัน ไม่ให้ไฟล์บวม
+const getLogFilename = () => {
+    const d = new Date();
+    return `server-${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}.log`;
 };
+const writeLog = (type, msg) => {
+    const cleanMsg = msg.replace(/\x1b\[[0-9;]*m/g, '');
+    fs.appendFile(path.join(__dirname, getLogFilename()), `${type} ${logTime()}: ${cleanMsg}\n`, () => {});
+    if (type === 'INFO') console.log(msg); else console.error(msg);
+};
+const logger = { info: (msg) => writeLog('INFO', msg), error: (msg) => writeLog('ERROR', msg) };
 
 process.on('uncaughtException', (err) => { logger.error(`${c.r}[Fatal Protected] ${err.stack}${c.rst}`); });
 process.on('unhandledRejection', (reason) => { logger.error(`${c.r}[Promise Protected] ${reason}${c.rst}`); });
 
 // ==========================================
-// ⚙️ SERVER CONFIG (V24 UNBREAKABLE EDITION)
+// ⚙️ SERVER CONFIG (V25 APEX ARCHITECTURE)
 // ==========================================
 const PORT = process.env.PORT || 80; 
-const LIMIT_BYTES = 35 * 1024 * 1024; // ลิมิตขนาดโมเดล 35MB
+const LIMIT_BYTES = 35 * 1024 * 1024; // 35MB
 const ENABLE_WHITELIST = true; 
 const TOKEN_MAX_AGE_MS = 6 * 60 * 60 * 1000; 
 
@@ -73,14 +80,11 @@ const redisPub = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL) : null
 const redisSub = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL) : null;
 
 if (redisSub) {
-    redisSub.subscribe('avatar-broadcast', (err) => {
-        if (err) logger.error(`[Redis] Subscribe Error: ${err.message}`);
-    });
+    redisSub.subscribe('avatar-broadcast', (err) => { if (err) logger.error(`[Redis] Subscribe Error: ${err.message}`); });
     redisSub.on('message', (channel, message) => {
         if (channel === 'avatar-broadcast') {
             const data = JSON.parse(message);
-            const buffer = Buffer.from(data.bufferHex, 'hex');
-            broadcastToLocalWatchers(data.uuid, buffer);
+            broadcastToLocalWatchers(data.uuid, Buffer.from(data.bufferHex, 'hex'));
         }
     });
 }
@@ -94,6 +98,20 @@ const app = express();
 app.set('trust proxy', 1);
 
 // ==========================================
+// 🛡️ [เพิ่มระบบ 2] Auto-Ban Shield (กัน DDoS/Spam)
+// ==========================================
+const bannedIPs = new Map();
+app.use((req, res, next) => {
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    if (bannedIPs.has(ip)) {
+        if (Date.now() < bannedIPs.get(ip)) return res.status(403).send("§cIP ของคุณถูกแบนชั่วคราวจากการสแปม");
+        bannedIPs.delete(ip); // ปลดแบนเมื่อครบเวลา
+    }
+    req.clientIp = ip;
+    next();
+});
+
+// ==========================================
 // 🛡️ MIDDLEWARES
 // ==========================================
 app.use(cors());
@@ -104,18 +122,14 @@ app.use(compression({
     threshold: 512, filter: (req, res) => req.headers['content-type'] === 'application/octet-stream' ? false : compression.filter(req, res)
 }));
 
-// ✅ [อัปเกรด] ขยาย Timeout เป็น 120 วิ ให้คนเน็ตช้าอัปโหลดไฟล์ผ่าน 100% ไม่หลุด
 app.use((req, res, next) => {
     if (req.url.includes('//')) req.url = req.url.replace(/\/{2,}/g, '/'); 
     res.setTimeout(120000, () => res.status(408).end()); 
     next(); 
 });
 
-// ✅ [อัปเกรด] ขยายท่อรับข้อมูลเป็น 50MB เพื่อรับไฟล์ 35MB เข้ามาตรวจเช็คได้สมบูรณ์ ไม่โดนตัดทิ้งหน้าประตู
-app.use(express.raw({ limit: '50mb', type: '*/*' })); 
-
 const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 300, message: { error: "Rate Limit Exceeded" } });
-const uploadLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, message: { error: "Uploads Limited" } }); 
+const uploadLimiter = rateLimit({ windowMs: 60 * 1000, max: 20, message: { error: "Uploads Limited" } }); 
 
 app.use('/api/', (req, res, next) => { 
     if (req.path === '/avatar' && req.method === 'PUT') return uploadLimiter(req, res, next); 
@@ -175,7 +189,7 @@ const formatUuid = (uuid) => {
     return clean.length === 32 ? `${clean.slice(0, 8)}-${clean.slice(8, 12)}-${clean.slice(12, 16)}-${clean.slice(16, 20)}-${clean.slice(20)}` : uuid;
 };
 
-// 🌟 ฟังก์ชันกระจายข้อมูลข้าม Node (Redis Ready)
+// 🌟 ฟังก์ชันกระจายข้อมูลข้าม Node
 const broadcastToLocalWatchers = (uuid, buffer, excludeWs = null) => {
     const watchers = wsMap.get(uuid);
     if (!watchers) return;
@@ -193,12 +207,10 @@ const broadcastToLocalWatchers = (uuid, buffer, excludeWs = null) => {
 
 const broadcastGlobal = (uuid, buffer, excludeWs = null) => {
     broadcastToLocalWatchers(uuid, buffer, excludeWs);
-    if (redisPub) {
-        redisPub.publish('avatar-broadcast', JSON.stringify({ uuid: uuid, bufferHex: buffer.toString('hex') })).catch(()=>{});
-    }
+    if (redisPub) redisPub.publish('avatar-broadcast', JSON.stringify({ uuid: uuid, bufferHex: buffer.toString('hex') })).catch(()=>{});
 };
 
-// 🧹 Advanced GC (แก้ปัญหาคนหลุดบ่อย ให้เก็บ Token ไว้นานพอ)
+// 🧹 Advanced GC
 const gcInterval = setInterval(async () => { 
     const now = Date.now();
     saveStatsDB(); 
@@ -206,7 +218,7 @@ const gcInterval = setInterval(async () => {
 
     for (const [tokenStr, userInfo] of tokens.entries()) {
         const isExpired = now - userInfo.createdAt > TOKEN_MAX_AGE_MS;
-        const isInactive = userInfo.activeSockets.size === 0 && now - userInfo.lastAccess > 60 * 60 * 1000; // ให้เวลา 1 ชั่วโมงเผื่อเน็ตหลุด!
+        const isInactive = userInfo.activeSockets.size === 0 && now - userInfo.lastAccess > 60 * 60 * 1000; 
         
         if (isExpired || isInactive) { 
             userInfo.activeSockets.forEach(ws => ws.terminate()); 
@@ -226,7 +238,7 @@ const gcInterval = setInterval(async () => {
     } catch (e) {}
 }, 5 * 60 * 1000); 
 
-// 💾 [อัปเกรด] Disk Space Guardian (แบคอัปรายชั่วโมง + ลบของเก่าเกิน 24 ชม. กัน HDD เต็ม)
+// 💾 Disk Space Guardian
 setInterval(async () => {
     try {
         const now = Date.now();
@@ -235,7 +247,6 @@ setInterval(async () => {
             if (file.endsWith('.moon')) await fsp.copyFile(path.join(avatarsDir, file), path.join(backupDir, file)).catch(()=>{});
         }
         
-        // ล้างไฟล์ Backup ที่เกิน 24 ชม.
         const backups = await fsp.readdir(backupDir);
         for (const file of backups) {
             const filePath = path.join(backupDir, file);
@@ -369,51 +380,65 @@ app.post('/api/equip', authMiddleware, (req, res) => {
     res.send("success");
 });
 
+// 🌊 [เพิ่มระบบ 3] Zero-RAM Stream Engine: รับไฟล์ใหญ่โดยไม่ต้องโหลดเข้า RAM ทีเดียว 
 app.put('/api/avatar', authMiddleware, async (req, res) => {
     const userInfo = req.userInfo;
     userInfo.lastAccess = Date.now(); 
-    
-    const fileData = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-    const contentLength = fileData.length;
+    userActivity.set(userInfo.username, "📤 กำลังอัปโหลดโมเดล...");
 
-    // ตรวจสอบขนาดไฟล์ ถ้าเกิน 35MB แตะออก
-    if (contentLength === 0 || contentLength > LIMIT_BYTES) {
-        if (contentLength > LIMIT_BYTES) {
+    const tempFile = path.join(avatarsDir, `${userInfo.uuid}_${Date.now()}.tmp`);
+    const finalFile = path.join(avatarsDir, `${userInfo.uuid}.moon`);
+    const writeStream = fs.createWriteStream(tempFile);
+    const hash = crypto.createHash('sha256');
+    let uploadedBytes = 0;
+
+    // คำนวณขนาดและ Hash ไปพร้อมๆ กับการสตรีม (สุดยอดแห่งการประหยัด RAM)
+    req.on('data', chunk => {
+        uploadedBytes += chunk.length;
+        if (uploadedBytes > LIMIT_BYTES) {
+            req.destroy(); // เตะทิ้งทันทีถ้ายัดไฟล์ใหญ่กว่า 35MB
+        } else {
+            hash.update(chunk);
+        }
+    });
+
+    try {
+        await pipeline(req, writeStream);
+
+        if (uploadedBytes === 0) {
+            await fsp.unlink(tempFile).catch(()=>{});
+            return res.status(400).send({ error: "Empty file upload" });
+        }
+
+        if (uploadedBytes > LIMIT_BYTES) {
+            await fsp.unlink(tempFile).catch(()=>{});
             let strikes = (spamTracker.get(userInfo.username) || 0) + 1;
             spamTracker.set(userInfo.username, strikes);
             if (strikes >= 3) {
-                sendToDiscord(`🚨 **[ระบบป้องกัน]** ผู้เล่น \`${userInfo.username}\` สแปมอัปโหลดไฟล์ใหญ่เกินกำหนด`);
-                sqlBlacklist.add(userInfo.usernameLower); 
+                bannedIPs.set(req.clientIp, Date.now() + 15 * 60 * 1000); // 🛡️ แบน IP 15 นาที
+                sendToDiscord(`🚨 **[Auto-Ban]** ผู้เล่น \`${userInfo.username}\` ถูกแบน IP 15 นาที ฐานสแปมไฟล์ใหญ่`);
             }
             return res.status(413).end();
         }
-        return res.status(400).send({ error: "Invalid file" });
-    }
 
-    userActivity.set(userInfo.username, "📤 กำลังอัปโหลดโมเดล...");
-    const tempFile = path.join(avatarsDir, `${userInfo.uuid}_${Date.now()}.tmp`);
-    const finalFile = path.join(avatarsDir, `${userInfo.uuid}.moon`);
-
-    try {
-        await fsp.writeFile(tempFile, fileData); 
-        const hash = crypto.createHash('sha256').update(fileData).digest('hex');
+        const finalHash = hash.digest('hex');
+        await fsp.rename(tempFile, finalFile); // Atomic Rename ป้องกันไฟล์เสีย
         
-        await fsp.rename(tempFile, finalFile); 
-        
-        hashCache.set(userInfo.uuid, hash); 
+        userInfo.lastSize = uploadedBytes;
+        hashCache.set(userInfo.uuid, finalHash); 
         apiJsonCache.delete(userInfo.uuid); 
         saveCache(); 
 
-        serverStats.totalUploads++; serverStats.totalBytes += contentLength; saveStatsDB();
+        serverStats.totalUploads++; serverStats.totalBytes += uploadedBytes; saveStatsDB();
         userActivity.set(userInfo.username, "✅ โมเดลพร้อมใช้งาน");
         
         const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); 
         userInfo.hexUuidBuffer.copy(buffer, 1); 
-        
         broadcastGlobal(userInfo.uuid, buffer); 
+        
         res.send("success"); 
     } catch (err) {
-        fsp.unlink(tempFile).catch(()=>{});
+        await fsp.unlink(tempFile).catch(()=>{});
         logger.error(`${c.r}[Upload Error] ${err.message}${c.rst}`);
         if (!res.headersSent) res.status(500).send({ error: "Upload failed" });
     }
@@ -480,7 +505,7 @@ app.use((err, req, res, next) => {
 });
 
 // ==========================================
-// ⚡ WEBSOCKET (V24 UNBREAKABLE ENGINE)
+// ⚡ WEBSOCKET (V25 APEX ENGINE)
 // ==========================================
 const server = http.createServer(app);
 server.keepAliveTimeout = 120000;  
@@ -549,7 +574,6 @@ wss.on('connection', (ws) => {
                     data.slice(6).copy(newbuffer, 22);
                     
                     broadcastGlobal(userInfo.uuid, newbuffer, isGlobal === 1 ? null : ws);
-                    
                 } catch (bufferErr) {}
             }
             else if (type === 2 || type === 3) {
@@ -571,12 +595,11 @@ wss.on('connection', (ws) => {
     
     ws.on('error', () => {}); 
     
-    // ✅ [ระบบการันตี] ถอน WS จากสถานะคนดูเท่านั้น ห้ามไปยุ่งกับตัว Token โดยเด็ดขาด 
     ws.on('close', () => {
         clearTimeout(authTimeout);
 
         if (ws.userInfo) {
-            ws.userInfo.activeSockets.delete(ws); // ลบจาก Profile ตัวเองว่าจอนี้ปิดไปแล้ว
+            ws.userInfo.activeSockets.delete(ws);
         }
 
         ws.watchedUuids.forEach(uuid => {
@@ -589,12 +612,11 @@ wss.on('connection', (ws) => {
     });
 });
 
-// ⚡ [แก้หลุดบ่อย] ปิงเช็คทุกๆ 25 วินาที อนุญาตให้กระตุกไม่ตอบกลับได้ถึง 4 รอบ (100 วินาที) ก่อนจะตัด
 const wsPingInterval = setInterval(() => { 
     wss.clients.forEach((ws) => { 
         if (!ws.isAlive) {
             ws.missedPings++;
-            if (ws.missedPings >= 4) return ws.terminate();
+            if (ws.missedPings >= 6) return ws.terminate();
         } else { ws.missedPings = 0; }
         ws.isAlive = false; 
         if (ws.readyState === WebSocket.OPEN) ws.ping(); 
@@ -616,13 +638,14 @@ process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
 
 server.listen(PORT, '0.0.0.0', () => {
     logger.info(`\n${c.p}==========================================${c.rst}`);
-    logger.info(`${c.b}✨ BIGAVATAR CLOUD (V24 UNBREAKABLE EDITION)${c.rst}`);
+    logger.info(`${c.b}✨ BIGAVATAR CLOUD (V25 APEX ARCHITECTURE)${c.rst}`);
     logger.info(`${c.g}✅ DotEnv Loaded Securely${c.rst}`);
     logger.info(`${c.g}🌍 Server Region: ${currentZone.name} ${currentZone.mcFlag}${c.rst}`);
     logger.info(`${redisPub ? c.g + '🔗 Redis Connected (Cluster Ready)' : c.y + '⚠️ No Redis (Running in Single Node Mode)'}${c.rst}`);
-    logger.info(`${c.y}🛠️ Express Raw 50MB & Timeout 120s (Fix Upload Bug)${c.rst}`);
-    logger.info(`${c.y}💾 Disk Guardian (Auto-Delete >24h Backups): ACTIVE${c.rst}`);
+    logger.info(`${c.y}🌊 Zero-RAM Stream Upload Engine: ACTIVE${c.rst}`);
+    logger.info(`${c.y}🛡️ Auto-Ban Shield (Spam Protection): ACTIVE${c.rst}`);
+    logger.info(`${c.y}📅 Daily Log Rotation: ACTIVE${c.rst}`);
     logger.info(`${c.p}==========================================${c.rst}\n`);
     
-    sendToDiscord(`🚀 **[SYSTEM START]** เซิร์ฟเวอร์ Figura ออนไลน์แล้ว! 🌍`);
+    sendToDiscord(`🚀 **[SYSTEM START]** เซิร์ฟเวอร์ Figura ออนไลน์แล้วพร้อมระบบ! 🌍`);
 });
