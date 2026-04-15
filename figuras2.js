@@ -61,15 +61,30 @@ const ZONE_INFO = {
     "SG": { webFlag: "🇸🇬", mcFlag: "[SG]", name: "Singapore", ping: "20-50 ms" },
     "JP": { webFlag: "🇯🇵", mcFlag: "[JP]", name: "Japan", ping: "80-120 ms" }
 };
+
 const currentZone = ZONE_INFO[SERVER_ZONE] || ZONE_INFO["TH"];
 
-const MOTD_MESSAGE = 
-    `§b┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓§r\n` +
-    `               §3§lBIGAVATAR §f§lCLOUD\n` +
-    `§b┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫§r\n` +
-    ` §b┃ §a● §fสถานะ: §aออนไลน์   §7| §d💾 §fรับไฟล์: §d${LIMIT_BYTES / 1024 / 1024}MB\n` +
-    ` §b┃ §e⚑ §fโซน: §e${currentZone.mcFlag} ${currentZone.name} §7(Ping: ${currentZone.ping})\n` +
-    `§b┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛§r`;
+const formatMB = (bytes) => (bytes / 1024 / 1024).toFixed(0);
+
+const getPingText = (ping) => {
+  if (ping < 20) return "§a<20 ms";
+  if (ping < 50) return "§e" + ping + " ms";
+  return "§c" + ping + " ms";
+};
+
+const MOTD_MESSAGE =
+`§b╔══════════════════════════════════════╗§r\n` +
+`§b║     §3§lBIGAVATAR §f§lCLOUD §7☁      §b║§r\n` +
+`§b╠══════════════════════════════════════╣§r\n` +
+`§b║ §a● §fสถานะ: §aออนไลน์ §7┃ §d💾 §fไฟล์: §d${formatMB(LIMIT_BYTES)}MB §b║§r\n` +
+`§b║ §e⚑ §fโซน: §e${currentZone.mcFlag} ${currentZone.name} §7(${getPingText(currentZone.ping)}) §b║§r\n` +
+`§b╠══════════════════════════════════════╣§r\n` +
+`§b║ §7🚀 §fSpeed: §aHigh Performance     §b║§r\n` +
+`§b║ §7🔒 §fSecurity: §a100% Protected    §b║§r\n` +
+`§b║ §7📦 §fStorage: §eUnlimited Ready    §b║§r\n` +
+`§b╠══════════════════════════════════════╣§r\n` +
+`§b║ §d✨ §fWelcome to next-gen cloud     §b║§r\n` +
+`§b╚══════════════════════════════════════╝§r`;
 
 const SYNC_INTERVAL_MS = 15000;    
 const WS_PING_INTERVAL_MS = 25000; 
