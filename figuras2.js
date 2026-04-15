@@ -70,7 +70,7 @@ const MOTD_MESSAGE =
     `  §8» §a● §fสถานะ: §aออนไลน์ §7| §b⚡ §fเวอร์ชัน: §bV.0.1.5\n` +
     `  §8» §e🌍 §fโซน: §e${currentZone.mcFlag} ${currentZone.name} §7(Ping: ${currentZone.ping})\n` +
     `  §8» §d📦 §fรองรับไฟล์สูงสุด: §d${LIMIT_BYTES / 1024 / 1024} MB\n` +
-    `§8§m                                            §r`;                                  §r`;
+    `§8§m                                            §r`; // 👈 ตรวจสอบให้แน่ใจว่าจบบรรทัดแค่นี้ ไม่มีตัวอักษรอื่นต่อท้าย
 
 const SYNC_INTERVAL_MS = 15000;    
 const WS_PING_INTERVAL_MS = 25000; 
