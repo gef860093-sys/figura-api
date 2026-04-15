@@ -642,5 +642,5 @@ server.listen(PORT, '0.0.0.0', () => {
     console.log(`${c.y}🛡️ Strict Buffer Checking: ACTIVE${c.rst}`);
     console.log(`${c.y}⚡ Lag-Spike Tolerance (No Disconnects): ACTIVE${c.rst}`);
     console.log(`${c.p}==========================================${c.rst}\n`);
-    sendToDiscord(`🚀 **[SYSTEM START]** เซิร์ฟเวอร์ Figura ออนไลน์แล้วพร้อมระบบ Ultimate Stability! 🌍 โซน: ${currentZone.name}`);
+    sendToDiscord(`🚀 **[SYSTEM START]** เซิร์ฟเวอร์ Figura ออนไลน์แล้ว! 🌍 โซน: ${currentZone.name}`);
 });
