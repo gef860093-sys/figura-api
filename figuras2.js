@@ -64,13 +64,12 @@ const ZONE_INFO = {
 const currentZone = ZONE_INFO[SERVER_ZONE] || ZONE_INFO["TH"];
 
 const MOTD_MESSAGE = 
-    `§8§m                                            §r\n` +
-    `       §3✦ §b§lBIGAVATAR §f§lCLOUD §3✦\n` +
-    `§8§m                                            §r\n` +
-    `  §8» §a● §fสถานะ: §aออนไลน์ §7| §b⚡ §fเวอร์ชัน: §bV.0.1.5\n` +
-    `  §8» §e🌍 §fโซน: §e${currentZone.mcFlag} ${currentZone.name} §7(Ping: ${currentZone.ping})\n` +
-    `  §8» §d📦 §fรองรับไฟล์สูงสุด: §d${LIMIT_BYTES / 1024 / 1024} MB\n` +
-    `§8§m                                            §r`; // 👈 ตรวจสอบให้แน่ใจว่าจบบรรทัดแค่นี้ ไม่มีตัวอักษรอื่นต่อท้าย
+    `§b┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓§r\n` +
+    `               §3§lBIGAVATAR §f§lCLOUD\n` +
+    `§b┣━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┫§r\n` +
+    ` §b┃ §a● §fสถานะ: §aออนไลน์   §7| §d💾 §fรับไฟล์: §d${LIMIT_BYTES / 1024 / 1024}MB\n` +
+    ` §b┃ §e⚑ §fโซน: §e${currentZone.mcFlag} ${currentZone.name} §7(Ping: ${currentZone.ping})\n` +
+    `§b┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛§r`;
 
 const SYNC_INTERVAL_MS = 15000;    
 const WS_PING_INTERVAL_MS = 25000; 
