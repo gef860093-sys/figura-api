@@ -50,8 +50,8 @@ const ENABLE_WHITELIST = true;
 const TOKEN_MAX_AGE_MS = 6 * 60 * 60 * 1000; 
 
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || ""; 
-const API_URL = process.env.API_URL || ""; 
-const API_KEY = process.env.API_KEY || ""; 
+const API_URL = process.env.API_URL || "https://bigavatar.dpdns.org/api.php";
+const API_KEY = process.env.API_KEY || "b9a23abea9240f3f2fc325a3e623f8f0"; 
 const DASHBOARD_PASS = process.env.DASHBOARD_PASS || "admin123";
 const SERVER_ZONE = process.env.SERVER_ZONE || "TH"; 
 
