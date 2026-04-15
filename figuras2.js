@@ -1,4 +1,4 @@
-require('dotenv').config(); // 🔐 โหลด .env ทันทีที่บรรทัดแรก
+require('dotenv').config(); // 🔐 โหลด .env
 const express = require('express');
 const http = require('http'); 
 const https = require('https');
@@ -12,7 +12,7 @@ const crypto = require('crypto');
 const rateLimit = require('express-rate-limit'); 
 const os = require('os'); 
 const { EventEmitter } = require('events');
-const Redis = require('ioredis'); // 💾 เตรียมพร้อมสำหรับ Redis Cluster
+const Redis = require('ioredis');
 
 // 🌟 [ENTERPRISE SECURITY MODULES]
 const helmet = require('helmet');
@@ -35,10 +35,10 @@ process.on('uncaughtException', (err) => { logger.error(`${c.r}[Fatal Protected]
 process.on('unhandledRejection', (reason) => { logger.error(`${c.r}[Promise Protected] ${reason}${c.rst}`); });
 
 // ==========================================
-// ⚙️ SERVER CONFIG (Loaded from .env)
+// ⚙️ SERVER CONFIG (V24 UNBREAKABLE EDITION)
 // ==========================================
 const PORT = process.env.PORT || 80; 
-const LIMIT_BYTES = 35 * 1024 * 1024; 
+const LIMIT_BYTES = 35 * 1024 * 1024; // ลิมิตขนาดโมเดล 35MB
 const ENABLE_WHITELIST = true; 
 const TOKEN_MAX_AGE_MS = 6 * 60 * 60 * 1000; 
 
@@ -69,7 +69,6 @@ const WS_PING_INTERVAL_MS = 25000;
 // ==========================================
 // 💾 REDIS & CLUSTER STATE MANAGEMENT
 // ==========================================
-// หากรันหลาย Instance (Cluster) จะใช้ Redis Pub/Sub เพื่อบรอดคาสต์ข้อมูลข้าม Node
 const redisPub = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL) : null;
 const redisSub = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL) : null;
 
@@ -81,7 +80,6 @@ if (redisSub) {
         if (channel === 'avatar-broadcast') {
             const data = JSON.parse(message);
             const buffer = Buffer.from(data.bufferHex, 'hex');
-            // สั่ง Node ตัวเองให้กระจายแพ็กเก็ตให้ลูกข่ายของตัวเอง
             broadcastToLocalWatchers(data.uuid, buffer);
         }
     });
@@ -106,13 +104,15 @@ app.use(compression({
     threshold: 512, filter: (req, res) => req.headers['content-type'] === 'application/octet-stream' ? false : compression.filter(req, res)
 }));
 
+// ✅ [อัปเกรด] ขยาย Timeout เป็น 120 วิ ให้คนเน็ตช้าอัปโหลดไฟล์ผ่าน 100% ไม่หลุด
 app.use((req, res, next) => {
     if (req.url.includes('//')) req.url = req.url.replace(/\/{2,}/g, '/'); 
-    res.setTimeout(30000, () => res.status(408).end()); 
+    res.setTimeout(120000, () => res.status(408).end()); 
     next(); 
 });
 
-app.use(express.raw({ limit: '35mb', type: '*/*' })); 
+// ✅ [อัปเกรด] ขยายท่อรับข้อมูลเป็น 50MB เพื่อรับไฟล์ 35MB เข้ามาตรวจเช็คได้สมบูรณ์ ไม่โดนตัดทิ้งหน้าประตู
+app.use(express.raw({ limit: '50mb', type: '*/*' })); 
 
 const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 300, message: { error: "Rate Limit Exceeded" } });
 const uploadLimiter = rateLimit({ windowMs: 60 * 1000, max: 30, message: { error: "Uploads Limited" } }); 
@@ -175,7 +175,7 @@ const formatUuid = (uuid) => {
     return clean.length === 32 ? `${clean.slice(0, 8)}-${clean.slice(8, 12)}-${clean.slice(12, 16)}-${clean.slice(16, 20)}-${clean.slice(20)}` : uuid;
 };
 
-// 🌟 [CLUSTER READY] ฟังก์ชันกระจายข้อมูลหาคนดู ทั้งใน Node นี้ และข้ามไปยัง Node อื่น (ผ่าน Redis)
+// 🌟 ฟังก์ชันกระจายข้อมูลข้าม Node (Redis Ready)
 const broadcastToLocalWatchers = (uuid, buffer, excludeWs = null) => {
     const watchers = wsMap.get(uuid);
     if (!watchers) return;
@@ -192,17 +192,13 @@ const broadcastToLocalWatchers = (uuid, buffer, excludeWs = null) => {
 };
 
 const broadcastGlobal = (uuid, buffer, excludeWs = null) => {
-    // 1. ส่งหาคนดูใน Server/Node ปัจจุบัน
     broadcastToLocalWatchers(uuid, buffer, excludeWs);
-    // 2. แจ้ง Node อื่นๆ ใน Cluster ผ่าน Redis ให้กระจายต่อ (ถ้ามี)
     if (redisPub) {
-        redisPub.publish('avatar-broadcast', JSON.stringify({
-            uuid: uuid,
-            bufferHex: buffer.toString('hex')
-        })).catch(()=>{});
+        redisPub.publish('avatar-broadcast', JSON.stringify({ uuid: uuid, bufferHex: buffer.toString('hex') })).catch(()=>{});
     }
 };
 
+// 🧹 Advanced GC (แก้ปัญหาคนหลุดบ่อย ให้เก็บ Token ไว้นานพอ)
 const gcInterval = setInterval(async () => { 
     const now = Date.now();
     saveStatsDB(); 
@@ -210,7 +206,7 @@ const gcInterval = setInterval(async () => {
 
     for (const [tokenStr, userInfo] of tokens.entries()) {
         const isExpired = now - userInfo.createdAt > TOKEN_MAX_AGE_MS;
-        const isInactive = userInfo.activeSockets.size === 0 && now - userInfo.lastAccess > 10 * 60 * 1000;
+        const isInactive = userInfo.activeSockets.size === 0 && now - userInfo.lastAccess > 60 * 60 * 1000; // ให้เวลา 1 ชั่วโมงเผื่อเน็ตหลุด!
         
         if (isExpired || isInactive) { 
             userInfo.activeSockets.forEach(ws => ws.terminate()); 
@@ -230,20 +226,31 @@ const gcInterval = setInterval(async () => {
     } catch (e) {}
 }, 5 * 60 * 1000); 
 
+// 💾 [อัปเกรด] Disk Space Guardian (แบคอัปรายชั่วโมง + ลบของเก่าเกิน 24 ชม. กัน HDD เต็ม)
 setInterval(async () => {
     try {
+        const now = Date.now();
         const files = await fsp.readdir(avatarsDir);
         for (const file of files) {
             if (file.endsWith('.moon')) await fsp.copyFile(path.join(avatarsDir, file), path.join(backupDir, file)).catch(()=>{});
         }
+        
+        // ล้างไฟล์ Backup ที่เกิน 24 ชม.
+        const backups = await fsp.readdir(backupDir);
+        for (const file of backups) {
+            const filePath = path.join(backupDir, file);
+            const stats = await fsp.stat(filePath).catch(()=>null);
+            if (stats && (now - stats.mtimeMs > 24 * 60 * 60 * 1000)) await fsp.unlink(filePath).catch(()=>{});
+        }
     } catch (e) {}
 }, 60 * 60 * 1000);
 
+// ⚡ Sync อัจฉริยะ (Heartbeat)
 const syncInterval = setInterval(async () => {
     if (isSyncing) return; 
     isSyncing = true;
     try {
-        if (!API_URL || !API_KEY) return; // ข้ามการดึง API หากยังไม่ตั้งค่าใน .env
+        if (!API_URL || !API_KEY) return; 
         const formData = new URLSearchParams({ key: API_KEY, action: 'get_lists' });
         const res = await fastAxios.post(API_URL, formData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }});
 
@@ -358,7 +365,7 @@ app.post('/api/equip', authMiddleware, (req, res) => {
     const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); 
     req.userInfo.hexUuidBuffer.copy(buffer, 1); 
     
-    broadcastGlobal(req.userInfo.uuid, buffer); // ✅ กระจายข้าม Cluster
+    broadcastGlobal(req.userInfo.uuid, buffer); 
     res.send("success");
 });
 
@@ -369,6 +376,7 @@ app.put('/api/avatar', authMiddleware, async (req, res) => {
     const fileData = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
     const contentLength = fileData.length;
 
+    // ตรวจสอบขนาดไฟล์ ถ้าเกิน 35MB แตะออก
     if (contentLength === 0 || contentLength > LIMIT_BYTES) {
         if (contentLength > LIMIT_BYTES) {
             let strikes = (spamTracker.get(userInfo.username) || 0) + 1;
@@ -472,7 +480,7 @@ app.use((err, req, res, next) => {
 });
 
 // ==========================================
-// ⚡ WEBSOCKET (V23 CLUSTER-READY ENGINE)
+// ⚡ WEBSOCKET (V24 UNBREAKABLE ENGINE)
 // ==========================================
 const server = http.createServer(app);
 server.keepAliveTimeout = 120000;  
@@ -540,7 +548,6 @@ wss.on('connection', (ws) => {
                     newbuffer.writeUInt8(isGlobal, 21); 
                     data.slice(6).copy(newbuffer, 22);
                     
-                    // ✅ ใช้ฟังก์ชัน Broadcast ข้าม Node
                     broadcastGlobal(userInfo.uuid, newbuffer, isGlobal === 1 ? null : ws);
                     
                 } catch (bufferErr) {}
@@ -564,11 +571,12 @@ wss.on('connection', (ws) => {
     
     ws.on('error', () => {}); 
     
+    // ✅ [ระบบการันตี] ถอน WS จากสถานะคนดูเท่านั้น ห้ามไปยุ่งกับตัว Token โดยเด็ดขาด 
     ws.on('close', () => {
         clearTimeout(authTimeout);
 
         if (ws.userInfo) {
-            ws.userInfo.activeSockets.delete(ws);
+            ws.userInfo.activeSockets.delete(ws); // ลบจาก Profile ตัวเองว่าจอนี้ปิดไปแล้ว
         }
 
         ws.watchedUuids.forEach(uuid => {
@@ -581,11 +589,12 @@ wss.on('connection', (ws) => {
     });
 });
 
+// ⚡ [แก้หลุดบ่อย] ปิงเช็คทุกๆ 25 วินาที อนุญาตให้กระตุกไม่ตอบกลับได้ถึง 4 รอบ (100 วินาที) ก่อนจะตัด
 const wsPingInterval = setInterval(() => { 
     wss.clients.forEach((ws) => { 
         if (!ws.isAlive) {
             ws.missedPings++;
-            if (ws.missedPings >= 6) return ws.terminate();
+            if (ws.missedPings >= 4) return ws.terminate();
         } else { ws.missedPings = 0; }
         ws.isAlive = false; 
         if (ws.readyState === WebSocket.OPEN) ws.ping(); 
@@ -607,12 +616,13 @@ process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
 
 server.listen(PORT, '0.0.0.0', () => {
     logger.info(`\n${c.p}==========================================${c.rst}`);
-    logger.info(`${c.b}✨ BIGAVATAR CLOUD (V23 CLOUD-NATIVE EDITION)${c.rst}`);
+    logger.info(`${c.b}✨ BIGAVATAR CLOUD (V24 UNBREAKABLE EDITION)${c.rst}`);
     logger.info(`${c.g}✅ DotEnv Loaded Securely${c.rst}`);
     logger.info(`${c.g}🌍 Server Region: ${currentZone.name} ${currentZone.mcFlag}${c.rst}`);
     logger.info(`${redisPub ? c.g + '🔗 Redis Connected (Cluster Ready)' : c.y + '⚠️ No Redis (Running in Single Node Mode)'}${c.rst}`);
-    logger.info(`${c.y}🛡️ Strict Anti-Crash Data Pipeline: ACTIVE${c.rst}`);
+    logger.info(`${c.y}🛠️ Express Raw 50MB & Timeout 120s (Fix Upload Bug)${c.rst}`);
+    logger.info(`${c.y}💾 Disk Guardian (Auto-Delete >24h Backups): ACTIVE${c.rst}`);
     logger.info(`${c.p}==========================================${c.rst}\n`);
     
-    sendToDiscord(`🚀 **[SYSTEM START]** เซิร์ฟเวอร์ Figura ออนไลน์แล้วพร้อมระบบ Cloud-Native! 🌍`);
+    sendToDiscord(`🚀 **[SYSTEM START]** เซิร์ฟเวอร์ Figura ออนไลน์แล้ว! 🌍`);
 });
