@@ -58,9 +58,8 @@ const MOTD_MESSAGE =
     `§c ➤ §cรายละเอียดเพิ่มเติมที่: §nhttps://dash.faydar.eu.cc\n` +
     `§8§m                                        §r`;
 
-// ⚡ ค่าปรับจูนเพื่อ "แก้คนหลุดบ่อย"
 const SYNC_INTERVAL_MS = 15000;    
-const WS_PING_INTERVAL_MS = 25000; // 🚀 เช็คปิงทุก 25 วินาที
+const WS_PING_INTERVAL_MS = 25000;
 const DASHBOARD_PASS = "admin123"; 
 
 const avatarsDir = path.join(__dirname, "avatars");
@@ -89,10 +88,19 @@ app.use((req, res, next) => {
     next(); 
 });
 
-// 🚀 รองรับการอัปโหลดไฟล์ 32MB ทาง HTTP เท่านั้น
-app.use(express.raw({ limit: '32mb', type: '*/*' })); 
+// ✅ [Fix 10] ป้องกัน Request ค้าง (Timeout)
+app.use((req, res, next) => {
+    res.setTimeout(15000, () => {
+        res.status(408).end();
+    });
+    next();
+});
 
-const apiLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 5000, message: { error: "Rate Limit Exceeded" } });
+// ❌ [Fix 6] ปิด express.raw({ limit: '32mb' }) เพื่อไม่ให้โหลดเข้า RAM ทั้งก้อน
+// เราจะใช้ stream pipeline รับไฟล์แทนใน route PUT /api/avatar
+
+// ✅ [Fix 5] ปรับ Rate Limit ให้พอดี ป้องกัน Bot ยิง
+const apiLimiter = rateLimit({ windowMs: 1 * 60 * 1000, max: 300, message: { error: "Rate Limit Exceeded" } });
 app.use('/api/', apiLimiter);
 
 // ==========================================
@@ -100,7 +108,7 @@ app.use('/api/', apiLimiter);
 // ==========================================
 const server_ids = new Map();
 const tokens = new Map();
-const tokenMap = new WeakMap(); 
+const tokenMap = new Map(); // ✅ [Fix 2] เปลื่ยนจาก WeakMap เป็น Map
 const wsMap = new Map(); 
 let hashCache = new Map(); 
 let apiJsonCache = new Map(); 
@@ -145,19 +153,25 @@ const gcInterval = setInterval(async () => {
     spamTracker.clear(); 
     saveStatsDB(); 
 
-    for (const [tokenStr, userInfo] of tokens.entries()) {
-        if (now - userInfo.lastAccess > 30 * 60 * 1000) { 
-            const uuid = userInfo.uuid;
-            if (!wsMap.has(uuid) || wsMap.get(uuid).size === 0) {
-                const targetUser = tokens.get(tokenStr);
-                tokens.delete(tokenStr); 
-                if (targetUser) userActivity.delete(targetUser.username);
-            }
+    // ✅ [Fix 9] กัน hashCache โตไม่หยุดจน RAM leak
+    if (hashCache.size > 5000) {
+        hashCache.clear();
+    }
+
+    // ✅ [Fix 3] เคลียร์ wsMap และ Tokens ที่ค้าง (Sync)
+    for (const [uuid, sockets] of wsMap.entries()) {
+        if (sockets.size === 0) {
+            wsMap.delete(uuid);
         }
     }
-    
-    for (const [uuid, sockets] of wsMap.entries()) {
-        if (sockets.size === 0) wsMap.delete(uuid);
+
+    for (const [tokenStr, userInfo] of tokens.entries()) {
+        if (!wsMap.has(userInfo.uuid)) {
+            if (now - userInfo.lastAccess > 10 * 60 * 1000) { 
+                tokens.delete(tokenStr); 
+                userActivity.delete(userInfo.username);
+            }
+        }
     }
 
     for (const [uuid, cacheData] of apiJsonCache.entries()) {
@@ -318,38 +332,41 @@ app.post('/api/equip', (req, res) => {
     res.send("success");
 });
 
+// ✅ [Fix 6] ใช้ Stream แทนการโหลดลง RAM (ป้องกัน RAM ระเบิด)
 app.put('/api/avatar', async (req, res) => {
     const userInfo = tokens.get(req.headers['token']);
     if (!userInfo) return res.status(401).end();
     
     userInfo.lastAccess = Date.now(); 
-    const fileData = Buffer.isBuffer(req.body) ? req.body : Buffer.alloc(0);
-    const contentLength = fileData.length;
-    
-    if (contentLength === 0) return res.status(400).send({ error: "Empty file upload" });
-    userInfo.lastSize = contentLength;
-    
-    if (contentLength > LIMIT_BYTES) {
-        let strikes = (spamTracker.get(userInfo.username) || 0) + 1;
-        spamTracker.set(userInfo.username, strikes);
-        if (strikes >= 3) {
-            sendToDiscord(`🚨 **[ระบบป้องกัน]** ผู้เล่น \`${userInfo.username}\` สแปมอัปโหลดไฟล์ใหญ่เกินกำหนด`);
-            sqlBlacklist.add(userInfo.usernameLower); 
-        }
-        return res.status(413).end();
-    }
-
     userActivity.set(userInfo.username, "📤 กำลังอัปโหลดโมเดล...");
     
-    // 🛡️ [แก้ไฟล์ชนกันเกมเด้ง] สร้างไฟล์ Temp ก่อน แล้วสลับชื่อ (Atomic Rename)
-    const tempFile = path.join(__dirname, 'avatars', `${userInfo.uuid}_${Date.now()}.tmp`);
-    const finalFile = path.join(__dirname, 'avatars', `${userInfo.uuid}.moon`);
+    const tempFile = path.join(avatarsDir, `${userInfo.uuid}_${Date.now()}.tmp`);
+    const finalFile = path.join(avatarsDir, `${userInfo.uuid}.moon`);
 
     try {
-        const hash = crypto.createHash('sha256').update(fileData).digest('hex');
+        // ใช้ stream รับไฟล์ตรงๆ เขียนลงดิสก์
+        await pipeline(req, fs.createWriteStream(tempFile));
+
+        const stats = await fsp.stat(tempFile);
+        if (stats.size === 0 || stats.size > LIMIT_BYTES) {
+            await fsp.unlink(tempFile).catch(()=>{});
+            
+            if (stats.size > LIMIT_BYTES) {
+                let strikes = (spamTracker.get(userInfo.username) || 0) + 1;
+                spamTracker.set(userInfo.username, strikes);
+                if (strikes >= 3) {
+                    sendToDiscord(`🚨 **[ระบบป้องกัน]** ผู้เล่น \`${userInfo.username}\` สแปมอัปโหลดไฟล์ใหญ่เกินกำหนด`);
+                    sqlBlacklist.add(userInfo.usernameLower); 
+                }
+                return res.status(413).end();
+            }
+            return res.status(400).send({ error: "Invalid file" });
+        }
+
+        // อ่านเพื่อสร้าง Hash อย่างปลอดภัย หลังจากที่เขียนเป็นไฟล์แล้ว
+        const fileBuffer = await fsp.readFile(tempFile);
+        const hash = crypto.createHash('sha256').update(fileBuffer).digest('hex');
         
-        // บันทึกลง Temp ก่อน แล้วค่อยเปลี่ยนชื่อ การันตีไฟล์ไม่คอรัปต์
-        await fsp.writeFile(tempFile, fileData);
         await fsp.rename(tempFile, finalFile); 
         
         hashCache.set(userInfo.uuid, hash); 
@@ -357,7 +374,7 @@ app.put('/api/avatar', async (req, res) => {
         saveCache(); 
 
         serverStats.totalUploads++;
-        serverStats.totalBytes += contentLength;
+        serverStats.totalBytes += stats.size;
         saveStatsDB();
 
         userActivity.set(userInfo.username, "✅ โมเดลพร้อมใช้งาน");
@@ -373,7 +390,7 @@ app.put('/api/avatar', async (req, res) => {
         }
         res.send("success"); 
     } catch (err) {
-        fsp.unlink(tempFile).catch(()=>{});
+        await fsp.unlink(tempFile).catch(()=>{});
         console.error(`${c.r}${logTime()} [Upload Error] ${err.message}${c.rst}`);
         if (!res.headersSent) res.status(500).send({ error: "Upload failed" });
     }
@@ -466,11 +483,19 @@ server.headersTimeout = 125000;
 const wss = new WebSocket.Server({ 
     server, 
     perMessageDeflate: false, 
-    maxPayload: 2 * 1024 * 1024, // 🛡️ [ป้องกัน RAM เต็ม] บล็อกแพ็คเก็ต WS ที่ใหญ่เกิน 2MB เด็ดขาด!
+    maxPayload: 2 * 1024 * 1024, 
     clientTracking: true
 });
 
+// ✅ [Fix 8] ตั้งลิมิต WS สูงสุด กันโดนยิง
+const MAX_WS = 5000;
+
 wss.on('connection', (ws) => {
+    if (wss.clients.size > MAX_WS) {
+        ws.terminate();
+        return;
+    }
+
     ws.isAlive = true; 
     ws.missedPings = 0; 
     
@@ -481,7 +506,6 @@ wss.on('connection', (ws) => {
 
     ws.on('message', (data) => {
         try {
-            // 🛡️ เช็คขนาดแพ็คเก็ต 2 ชั้น ป้องกันแฮกเกอร์ยิงขยะเข้ามา
             if (!Buffer.isBuffer(data) || data.length < 1 || data.length > 1048576) return; 
 
             const type = data[0];
@@ -508,13 +532,19 @@ wss.on('connection', (ws) => {
                 
                 const connections = wsMap.get(userInfo.uuid);
                 if (connections) { 
+                    // ✅ [Fix 4] Broadcast พังเวลา ws error แก้ด้วยการเช็คและเตะทิ้งถ้า Error
                     connections.forEach(tws => { 
-                        // 🛡️ Try-Catch กันเหนียว ป้องกัน Server Crash หากเชื่อมต่อมีปัญหา
+                        if (tws.readyState !== 1) {
+                            connections.delete(tws);
+                            return;
+                        }
                         try {
-                            if (tws.readyState === 1 && (isGlobal === 1 || tws !== ws) && tws.bufferedAmount < 1048576) {
+                            if ((isGlobal === 1 || tws !== ws) && tws.bufferedAmount < 1048576) {
                                 tws.send(newbuffer, { binary: true });
                             } 
-                        } catch (err) {}
+                        } catch (err) {
+                            connections.delete(tws);
+                        }
                     }); 
                 }
             }
@@ -543,23 +573,23 @@ wss.on('connection', (ws) => {
             const uuid = userInfo.uuid;
             if (wsMap.has(uuid)) { 
                 wsMap.get(uuid).delete(ws); 
-                if (wsMap.get(uuid).size === 0) {
-                    wsMap.delete(uuid); 
-                    tokens.delete(tokenStr); 
-                    userActivity.delete(userInfo.username);
-                }
+                // ✅ [Fix 1] นำ tokens.delete(tokenStr) ออก ให้ GC จัดการ เพื่อไม่ให้หลุดมั่ว
             }
         }
     });
 });
 
-// ⚡ [ป้องกันคนหลุด] ขยายเวลายอมให้เน็ตกระตุกได้ 4 รอบ (100 วินาที) ก่อนจะตัดสาย!
+// ✅ [Fix 7] ปรับ Ping logic ให้เสถียรขึ้น เตะคนผิดน้อยลง
 const wsPingInterval = setInterval(() => { 
     wss.clients.forEach((ws) => { 
-        if (ws.isAlive === false) {
+        if (!ws.isAlive) {
             ws.missedPings++;
-            // อนุญาตให้เน็ตแล็กได้ถึง 4 รอบ ป้องกันการโดนเตะแบบงงๆ
-            if (ws.missedPings >= 4) return ws.terminate(); 
+            if (ws.missedPings >= 6) { 
+                ws.terminate();
+                return;
+            }
+        } else {
+            ws.missedPings = 0;
         }
         ws.isAlive = false; 
         if (ws.readyState === 1) ws.ping(); 
@@ -568,7 +598,7 @@ const wsPingInterval = setInterval(() => {
 
 wss.on('close', () => clearInterval(wsPingInterval));
 
-// 🏗️ Graceful Shutdown (ระบบปิดตัวเองอย่างปลอดภัย)
+// 🏗️ Graceful Shutdown
 const shutdown = () => {
     console.log(`\n${c.y}${logTime()} ⚠️ กำลังเซฟข้อมูลและปิดเซิร์ฟเวอร์อย่างปลอดภัย...${c.rst}`);
     clearInterval(syncInterval);
