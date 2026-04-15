@@ -64,12 +64,13 @@ const ZONE_INFO = {
 const currentZone = ZONE_INFO[SERVER_ZONE] || ZONE_INFO["TH"];
 
 const MOTD_MESSAGE = 
-    `§8§m                                        §r\n` +
-    `  §3§l✦ §b§lB§3§lI§b§lG§3§lA§b§lV§3§lA§b§lT§3§lA§b§lR §f§lC§7§lL§f§lO§7§lU§f§lD §b§l✦\n` +
-    `§8§m                                        §r\n` +
-    `§a ✔ §aสถานะ: §fออนไลน์ \n` +
-    `§e ⚑ §eโซนเซิร์ฟเวอร์: §f${currentZone.mcFlag} ${currentZone.name}\n` +
-    `§8§m                                        §r`;
+    `§8§m                                            §r\n` +
+    `       §3✦ §b§lBIGAVATAR §f§lCLOUD §3✦\n` +
+    `§8§m                                            §r\n` +
+    `  §8» §a● §fสถานะ: §aออนไลน์ §7| §b⚡ §fเวอร์ชัน: §bV.0.1.5\n` +
+    `  §8» §e🌍 §fโซน: §e${currentZone.mcFlag} ${currentZone.name} §7(Ping: ${currentZone.ping})\n` +
+    `  §8» §d📦 §fรองรับไฟล์สูงสุด: §d${LIMIT_BYTES / 1024 / 1024} MB\n` +
+    `§8§m                                            §r`;                                  §r`;
 
 const SYNC_INTERVAL_MS = 15000;    
 const WS_PING_INTERVAL_MS = 25000; 
