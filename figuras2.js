@@ -46,7 +46,7 @@ process.on('unhandledRejection', (reason) => { logger.error(`${c.r}[Promise Prot
 // ⚙️ SERVER CONFIG (V25 APEX ARCHITECTURE)
 // ==========================================
 const PORT = process.env.PORT || 80; 
-const LIMIT_BYTES = 35 * 1024 * 1024; // 35MB
+const LIMIT_BYTES = 50 * 1024 * 1024; // 35MB
 const ENABLE_WHITELIST = true; 
 const TOKEN_MAX_AGE_MS = 6 * 60 * 60 * 1000; 
 
