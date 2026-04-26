@@ -74,7 +74,7 @@ const getPingText = (ping) => {
 
 const MOTD_MESSAGE =
 `§b╔══════════════════════════════════════╗§r\n` +
-`§b║     §3§lBIGAVATAR §f§lCLOUD §7☁      §b║§r\n` +
+`§b║     §3§lFAYDAR §f§lCLOUD §7☁      §b║§r\n` +
 `§b╠══════════════════════════════════════╣§r\n` +
 `§b║ §a● §fสถานะ: §aออนไลน์ §7┃ §d💾 §fไฟล์: §d${formatMB(LIMIT_BYTES)}MB §b║§r\n` +
 `§b║ §e⚑ §fโซน: §e${currentZone.mcFlag} ${currentZone.name} §7(${getPingText(currentZone.ping)}) §b║§r\n` +
