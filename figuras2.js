@@ -46,7 +46,7 @@ process.on('unhandledRejection', (reason) => { logger.error(`${c.r}[Promise Prot
 // ⚙️ SERVER CONFIG (V25 APEX ARCHITECTURE)
 // ==========================================
 const PORT = process.env.PORT || 80; 
-const LIMIT_BYTES = 50 * 1024 * 1024; // 35MB
+const LIMIT_BYTES = 50 * 1024 * 1024; // 50MB
 const ENABLE_WHITELIST = true; 
 const TOKEN_MAX_AGE_MS = 6 * 60 * 60 * 1000; 
 
@@ -83,7 +83,7 @@ const MOTD_MESSAGE =
 `§b║ §7🔒 §fSecurity: §a100% Protected    §b║§r\n` +
 `§b║ §7📦 §fStorage: §eUnlimited Ready    §b║§r\n` +
 `§b╠══════════════════════════════════════╣§r\n` +
-`§b║ §d✨ §fWelcome to next-gen cloud     §b║§r\n` +
+`§b║ §d✨ §fWelcome FayDarCloud     §b║§r\n` +
 `§b╚══════════════════════════════════════╝§r`;
 
 const SYNC_INTERVAL_MS = 15000;    
