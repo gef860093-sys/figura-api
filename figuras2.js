@@ -23,6 +23,9 @@ const Database = require('better-sqlite3');
 
 EventEmitter.defaultMaxListeners = 15000;
 
+// ==========================================
+// 🎨 ระบบสีและ Log สำหรับ Console
+// ==========================================
 const c = { g: '\x1b[32m', b: '\x1b[36m', y: '\x1b[33m', r: '\x1b[31m', p: '\x1b[35m', rst: '\x1b[0m' };
 const logTime = () => `[${new Date().toLocaleTimeString('th-TH')}]`;
 const startTime = Date.now();
@@ -42,7 +45,7 @@ process.on('uncaughtException', (err) => { logger.error(`${c.r}[Fatal Protected]
 process.on('unhandledRejection', (reason) => { logger.error(`${c.r}[Promise Protected] ${reason}${c.rst}`); });
 
 // ==========================================
-// ⚙️ SERVER CONFIG (DYNAMIC WEB CONFIG)
+// ⚙️ SERVER CONFIGURATION
 // ==========================================
 const PORT = process.env.PORT || 80; 
 
@@ -54,7 +57,7 @@ let UPLOAD_COOLDOWN_MS = 3 * 1000;
 let MOTD_TITLE = "FAYDAR";
 let MOTD_SUBTITLE = "Welcome FayDarCloud";
 
-const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || "https://ptb.discord.com/api/webhooks/1498438345506689146/cVbOYKs2AiG7Ay6uYvDdCQeRE5GzcVgodql_0mMTLqd75aFNriTEdj1ebQLrJca1eHSa"; 
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || ""; 
 const API_URL = process.env.API_URL || "https://bigavatar.dpdns.org/api.php"; 
 const API_KEY = process.env.API_KEY || "76103eb13671bab31823dc12ed97edbc"; 
 const DASHBOARD_PASS = process.env.DASHBOARD_PASS || "admin123";
@@ -91,10 +94,12 @@ const generateMotd = () => {
 
 let MOTD_MESSAGE = generateMotd();
 
-// ⚡ [HYPER-SYNC] รอบซิงค์ข้อมูลปรับเป็น 3 วินาที
 const SYNC_INTERVAL_MS = 3000;    
 const WS_PING_INTERVAL_MS = 25000; 
 
+// ==========================================
+// 🔗 REDIS & DATABASE SETUP
+// ==========================================
 const redisPub = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL) : null;
 const redisSub = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL) : null;
 
@@ -113,7 +118,6 @@ const backupDir = path.join(__dirname, "avatars_backup");
 if (!fs.existsSync(avatarsDir)) fs.mkdirSync(avatarsDir, { recursive: true });
 if (!fs.existsSync(backupDir)) fs.mkdirSync(backupDir, { recursive: true });
 
-// ⚡ [DATABASE WAL MODE] ตั้งค่า SQLite เป็น WAL ให้รองรับการอัปโหลดพร้อมกันได้ไม่สะดุด
 const db = new Database(path.join(__dirname, 'serverDB.sqlite'));
 db.pragma('journal_mode = WAL');
 db.prepare(`CREATE TABLE IF NOT EXISTS stats (id INTEGER PRIMARY KEY, totalLogins INTEGER, totalUploads INTEGER, totalBytes INTEGER)`).run();
@@ -132,6 +136,9 @@ const saveStatsDB = () => {
     } catch (e) { logger.error(`[DB Error] ${e.message}`); }
 };
 
+// ==========================================
+// 🌐 EXPRESS APP & MIDDLEWARE
+// ==========================================
 const app = express();
 app.set('trust proxy', 1);
 
@@ -147,7 +154,13 @@ app.use((req, res, next) => {
     next();
 });
 
-app.use(cors());
+// 🚀 [CORS PATCH] อนุญาตให้หน้าเว็บ Dashboard เรียกใช้ API Kick ได้
+app.use(cors({
+    origin: '*', 
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'token', 'x-admin-key']
+}));
+
 app.use(helmet({ contentSecurityPolicy: false })); 
 app.use(hpp()); 
 
@@ -169,6 +182,9 @@ app.use('/api/', (req, res, next) => {
     next(); 
 }, apiLimiter);
 
+// ==========================================
+// 🧠 CACHE & STATE MANAGEMENT
+// ==========================================
 class LRUCache {
     constructor(limit) { this.map = new Map(); this.limit = limit; }
     get(key) {
@@ -201,7 +217,6 @@ let isSyncing = false;
 let isMaintenanceMode = false;
 let lastMaintenanceState = false;
 
-// ⚡ เปิด Keep-Alive โหลดข้อมูลจากเว็บได้แบบไม่มีดีเลย์
 const fastAxios = axios.create({
     timeout: 5000, 
     httpAgent: new http.Agent({ keepAlive: true, maxSockets: 1000 }),
@@ -236,6 +251,9 @@ const broadcastGlobal = (uuid, buffer, excludeWs = null) => {
     if (redisPub) redisPub.publish('avatar-broadcast', JSON.stringify({ uuid: uuid, bufferHex: buffer.toString('hex') })).catch(()=>{});
 };
 
+// ==========================================
+// 🗑️ GARBAGE COLLECTION & BACKUP
+// ==========================================
 const gcInterval = setInterval(async () => { 
     const now = Date.now();
     saveStatsDB(); 
@@ -246,7 +264,7 @@ const gcInterval = setInterval(async () => {
         const isInactive = userInfo.activeSockets.size === 0 && now - userInfo.lastAccess > 60 * 60 * 1000; 
         
         if (isExpired || isInactive) { 
-            userInfo.activeSockets.forEach(ws => ws.terminate()); 
+            userInfo.activeSockets.forEach(ws => { try { ws.terminate(); } catch(e){} }); 
             tokens.delete(tokenStr); 
             userActivity.delete(userInfo.username);
             uploadCooldowns.delete(userInfo.username);
@@ -281,6 +299,9 @@ setInterval(async () => {
     } catch (e) {}
 }, 60 * 60 * 1000);
 
+// ==========================================
+// 🔄 DATABASE SYNC (API POLLING)
+// ==========================================
 const runSync = async () => {
     if (isSyncing) return; 
     isSyncing = true;
@@ -298,14 +319,10 @@ const runSync = async () => {
             
             if (res.data.settings) {
                 const newLimitMB = parseInt(res.data.settings.max_upload_mb);
-                if (!isNaN(newLimitMB) && newLimitMB > 0) {
-                    LIMIT_BYTES = newLimitMB * 1024 * 1024;
-                }
+                if (!isNaN(newLimitMB) && newLimitMB > 0) LIMIT_BYTES = newLimitMB * 1024 * 1024;
                 
                 const newCooldownSec = parseInt(res.data.settings.cooldown_sec);
-                if (!isNaN(newCooldownSec) && newCooldownSec > 0) {
-                    UPLOAD_COOLDOWN_MS = newCooldownSec * 1000;
-                }
+                if (!isNaN(newCooldownSec) && newCooldownSec > 0) UPLOAD_COOLDOWN_MS = newCooldownSec * 1000;
 
                 MOTD_TITLE = res.data.settings.motd_title || "FAYDAR";
                 MOTD_SUBTITLE = res.data.settings.motd_subtitle || "Welcome FayDarCloud";
@@ -323,7 +340,7 @@ const runSync = async () => {
         for (const [tokenStr, userInfo] of tokens.entries()) {
             const uname = userInfo.usernameLower; 
             if (isMaintenanceMode || sqlBlacklist.has(uname) || (ENABLE_WHITELIST && !sqlWhitelist.has(uname))) {
-                userInfo.activeSockets.forEach(ws => ws.terminate());
+                userInfo.activeSockets.forEach(ws => { try { ws.terminate(); } catch(e){} });
                 tokens.delete(tokenStr);
                 userActivity.delete(userInfo.username);
                 continue;
@@ -340,20 +357,26 @@ const runSync = async () => {
     } catch (e) {} finally { isSyncing = false; }
 };
 
-// ⚡ สั่งให้ซิงค์ทันทีตอนเปิดเซิร์ฟเวอร์
 setTimeout(runSync, 1000); 
 const syncInterval = setInterval(runSync, SYNC_INTERVAL_MS); 
 
+// ==========================================
+// 🚀 REST API ENDPOINTS
+// ==========================================
+
+// 🛡️ API สำหรับให้หน้า Dashboard เตะผู้เล่น
 app.post('/api/admin/kick-avatar', (req, res) => {
-    if (req.headers['x-admin-key'] !== ADMIN_SECRET) return res.status(403).json({ error: "Unauthorized" });
+    if (req.headers['x-admin-key'] !== ADMIN_SECRET) return res.status(403).json({ success: false, error: "Unauthorized - Invalid Secret Key" });
     
     const targetUsername = req.body.username?.toLowerCase();
-    if (!targetUsername) return res.status(400).json({ error: "Missing username" });
+    if (!targetUsername) return res.status(400).json({ success: false, error: "Missing username" });
 
     let kicked = false;
     for (const [tokenStr, userInfo] of tokens.entries()) {
         if (userInfo.usernameLower === targetUsername) {
-            userInfo.activeSockets.forEach(ws => ws.terminate());
+            userInfo.activeSockets.forEach(ws => { 
+                try { ws.close(1000, "Kicked by Admin"); } catch(e) {} 
+            });
             tokens.delete(tokenStr);
             kicked = true;
             
@@ -361,7 +384,7 @@ app.post('/api/admin/kick-avatar', (req, res) => {
             sendToDiscord(`🚨 **[Admin Action]** บังคับลบโมเดลและเตะ \`${targetUsername}\` ออกจากระบบ`);
         }
     }
-    res.json({ success: kicked, message: kicked ? "Kicked and removed avatar" : "User not found" });
+    res.json({ success: kicked, message: kicked ? "Kicked and removed avatar" : "User not found online" });
 });
 
 app.get('/health', (req, res) => res.status(200).json({ status: 'UP', localPlayers: tokens.size, memory: process.memoryUsage().rss / 1024 / 1024, uptime: process.uptime() }));
@@ -376,11 +399,8 @@ app.get('/api/server-stats', (req, res) => {
     });
 });
 
-app.get('/api/motd', (req, res) => {
-    res.type('text/plain').status(200).send(MOTD_MESSAGE);
-});
+app.get('/api/motd', (req, res) => { res.type('text/plain').status(200).send(MOTD_MESSAGE); });
 app.get('/api/version', (req, res) => res.json({"release":"0.1.5", "prerelease":"0.1.5"}));
-
 app.get('/api/limits', (req, res) => res.json({"rate": { "pingSize": 1048576, "pingRate": 4096, "equip": 0, "download": 999999999999, "upload": 99999999999 }, "limits": { "maxAvatarSize": LIMIT_BYTES, "maxAvatars": 100, "allowedBadges": { "special": Array(15).fill(0), "pride": Array(30).fill(0) } }}));
 
 app.get('/api/auth/id', (req, res) => {
@@ -438,8 +458,6 @@ app.post('/api/equip', authMiddleware, (req, res) => {
     req.userInfo.hexUuidBuffer.copy(buffer, 1); 
     
     broadcastGlobal(req.userInfo.uuid, buffer); 
-    
-    // 🛠️ [แก้บั๊ก Error] ส่งกลับ JSON รูปแบบมาตรฐาน
     res.status(200).json({ success: true });
 });
 
@@ -447,18 +465,15 @@ const handleAvatarUpload = async (req, res) => {
     const userInfo = req.userInfo;
     
     const cooldownTime = uploadCooldowns.get(userInfo.username);
-    if (cooldownTime && Date.now() < cooldownTime) {
-        return res.status(429).json({ error: "Wait cooldown" });
-    }
+    if (cooldownTime && Date.now() < cooldownTime) return res.status(429).json({ error: "Wait cooldown" });
 
     userInfo.lastAccess = Date.now(); 
-    userActivity.set(userInfo.username, "📤 กำลังอัปโหลดโมเดล...");
+    userActivity.set(userInfo.username, "📤 กำลังอัปโหลด...");
 
     const tempFile = path.join(avatarsDir, `${userInfo.uuid}_${Date.now()}.tmp`);
     const finalFile = path.join(avatarsDir, `${userInfo.uuid}.moon`);
     const writeStream = fs.createWriteStream(tempFile);
     const hash = crypto.createHash('sha256');
-    
     let uploadedBytes = 0;
 
     const processStream = new Transform({
@@ -484,17 +499,15 @@ const handleAvatarUpload = async (req, res) => {
         userInfo.lastSize = uploadedBytes;
         hashCache.set(userInfo.uuid, finalHash); 
         apiJsonCache.delete(userInfo.uuid); 
-        
         uploadCooldowns.set(userInfo.username, Date.now() + UPLOAD_COOLDOWN_MS);
 
         serverStats.totalUploads++; serverStats.totalBytes += uploadedBytes; saveStatsDB();
-        userActivity.set(userInfo.username, "✅ โมเดลพร้อมใช้งาน");
+        userActivity.set(userInfo.username, "✅ พร้อมใช้งาน");
         
         const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); 
         userInfo.hexUuidBuffer.copy(buffer, 1); 
         broadcastGlobal(userInfo.uuid, buffer); 
         
-        // 🛠️ [แก้บั๊ก Error] ส่ง JSON ค่า Hash ตามมาตรฐาน Mod
         res.status(200).json({ success: true, hash: finalHash }); 
     } catch (err) {
         await fsp.unlink(tempFile).catch(()=>{});
@@ -508,7 +521,6 @@ const handleAvatarUpload = async (req, res) => {
             }
             return res.status(413).json({ error: "Payload Too Large" });
         }
-
         logger.error(`${c.r}[Upload Error] ${err.message}${c.rst}`);
         if (!res.headersSent) res.status(500).json({ error: "Upload failed" });
     }
@@ -528,10 +540,8 @@ app.delete('/api/avatar', authMiddleware, async (req, res) => {
         
         const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); 
         userInfo.hexUuidBuffer.copy(buffer, 1); 
-        
         broadcastGlobal(userInfo.uuid, buffer); 
         
-        // 🛠️ [แก้บั๊ก Error] 
         res.status(200).json({ success: true }); 
     } catch (err) { res.status(404).end(); }
 });
@@ -580,7 +590,7 @@ app.use((err, req, res, next) => {
 });
 
 // ==========================================
-// ⚡ WEBSOCKET (ULTRA ANTI-DROP EDITION)
+// ⚡ WEBSOCKET ENGINE (ULTRA ANTI-DROP EDITION)
 // ==========================================
 const server = http.createServer(app);
 server.keepAliveTimeout = 120000;  
@@ -633,7 +643,9 @@ wss.on('connection', (ws) => {
                     ws.userInfo = userInfo; 
                     userInfo.activeSockets.add(ws); 
                     
-                    if (ws.readyState === WebSocket.OPEN) ws.send(Buffer.from([0]), { binary: true });
+                    if (ws.readyState === WebSocket.OPEN) {
+                        try { ws.send(Buffer.from([0]), { binary: true }); } catch (e) {}
+                    }
                 } else {
                     ws.terminate(); 
                 }
@@ -698,12 +710,15 @@ const wsPingInterval = setInterval(() => {
             if (ws.missedPings >= 5) return ws.terminate();
         } else { ws.missedPings = 0; }
         ws.isAlive = false; 
-        if (ws.readyState === WebSocket.OPEN) ws.ping(); 
+        if (ws.readyState === WebSocket.OPEN) { try { ws.ping(); } catch(e){} } 
     }); 
 }, WS_PING_INTERVAL_MS); 
 
 wss.on('close', () => clearInterval(wsPingInterval));
 
+// ==========================================
+// 🛡️ SHUTDOWN SAFETY
+// ==========================================
 const shutdown = () => {
     logger.info(`\n${c.y}⚠️ กำลังเซฟข้อมูลและปิดเซิร์ฟเวอร์อย่างปลอดภัย...${c.rst}`);
     clearInterval(syncInterval); clearInterval(gcInterval); clearInterval(wsPingInterval);
