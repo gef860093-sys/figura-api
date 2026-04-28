@@ -41,28 +41,31 @@ const writeLog = (type, msg) => {
 };
 const logger = { info: (msg) => writeLog('INFO', msg), error: (msg) => writeLog('ERROR', msg) };
 
+// 🛡️ ป้องกันระบบ Crash (เซิร์ฟเวอร์ดับ)
 process.on('uncaughtException', (err) => { logger.error(`${c.r}[Fatal Protected] ${err.stack}${c.rst}`); });
 process.on('unhandledRejection', (reason) => { logger.error(`${c.r}[Promise Protected] ${reason}${c.rst}`); });
 
 // ==========================================
-// ⚙️ SERVER CONFIGURATION
+// ⚙️ SERVER CONFIGURATION (ดึงจาก Environment)
 // ==========================================
 const PORT = process.env.PORT || 80; 
 
-let LIMIT_BYTES = 50 * 1024 * 1024; 
+let LIMIT_BYTES = 50 * 1024 * 1024; // 50MB (จะถูกเขียนทับด้วยค่าจากเว็บ)
 
+// 🌟 หากต้องการปิด Whitelist ให้เปลี่ยนจาก true เป็น false
 const ENABLE_WHITELIST = true; 
+
 const TOKEN_MAX_AGE_MS = 12 * 60 * 60 * 1000; 
 let UPLOAD_COOLDOWN_MS = 3 * 1000; 
 let MOTD_TITLE = "FAYDAR";
 let MOTD_SUBTITLE = "Welcome FayDarCloud";
 
-const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || ""; 
+const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || "https://ptb.discord.com/api/webhooks/1493712415831887955/-DO5NvlZUp83EDkr7JQb13QHdrTNeveugQwXy2Ni74fxxbbw4PYcuQHqoUgs2Q7cOaz-"; 
 const API_URL = process.env.API_URL || "https://bigavatar.dpdns.org/api.php"; 
 const API_KEY = process.env.API_KEY || "76103eb13671bab31823dc12ed97edbc"; 
 const DASHBOARD_PASS = process.env.DASHBOARD_PASS || "admin123";
 const SERVER_ZONE = process.env.SERVER_ZONE || "TH"; 
-const ADMIN_SECRET = process.env.ADMIN_SECRET || "faydar_super_secret_key"; 
+const ADMIN_SECRET = process.env.ADMIN_SECRET || "LNOV-7Q2Q-LOE6-PWTT"; 
 
 const ZONE_INFO = {
     "TH": { webFlag: "🇹🇭", mcFlag: "[TH]", name: "Thailand", ping: 15 },
@@ -144,6 +147,8 @@ app.set('trust proxy', 1);
 
 const bannedIPs = new Map();
 app.use(express.json()); 
+
+// 🛡️ ระบบแบน IP สแปมเมอร์
 app.use((req, res, next) => {
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
     if (bannedIPs.has(ip)) {
@@ -360,7 +365,7 @@ setTimeout(runSync, 1000);
 const syncInterval = setInterval(runSync, SYNC_INTERVAL_MS); 
 
 // ==========================================
-// 🚨 KICK API (ระบบยึดของกลาง: เตะ + ลบไฟล์ .moon ทิ้ง)
+// 🚨 KICK API (ระบบยึดของกลาง: เตะ + ลบไฟล์ .moon ออกจากเซิร์ฟเวอร์)
 // ==========================================
 app.post('/api/admin/kick-avatar', (req, res) => {
     if (req.headers['x-admin-key'] !== ADMIN_SECRET) return res.status(403).json({ error: "Unauthorized" });
@@ -371,19 +376,20 @@ app.post('/api/admin/kick-avatar', (req, res) => {
     let kicked = false;
     for (const [tokenStr, userInfo] of tokens.entries()) {
         if (userInfo.usernameLower === targetUsername) {
-            // 1. ตัดการเชื่อมต่อผู้เล่น (เด้ง Cloud Disconnected)
+            // 1. ตัดการเชื่อมต่อผู้เล่น (เด้ง Cloud Disconnected ในเกม)
             userInfo.activeSockets.forEach(ws => { try { ws.terminate(); } catch(e){} });
             tokens.delete(tokenStr);
             kicked = true;
             
-            // 2. ลบไฟล์ .moon ออกจากเซิร์ฟเวอร์ (ยึดของกลาง)
+            // 2. ลบไฟล์ .moon ออกจากเซิร์ฟเวอร์ (ยึดของกลาง) 
+            // ลบโค้ดที่มีปัญหาบั๊กออกแล้ว จะไม่ทำให้เกมฝั่งผู้เล่นบั๊ก
             fsp.unlink(path.join(avatarsDir, `${userInfo.uuid}.moon`)).catch(() => {});
             
-            // 3. เคลียร์แคชระบบ เพื่อให้คนอื่นเลิกโหลดโมเดลนี้
+            // 3. เคลียร์ระบบความจำ (Cache) 
             hashCache.delete(userInfo.uuid); 
             apiJsonCache.delete(userInfo.uuid);
             
-            sendToDiscord(`🚨 **[Admin Action]** สั่งเตะและยึดโมเดล (ลบไฟล์) ของ \`${targetUsername}\` ออกจากระบบแล้ว`);
+            sendToDiscord(`🚨 **[Admin Action]** สั่งเตะและยึดโมเดลของ \`${targetUsername}\` ออกจากระบบแล้ว`);
         }
     }
     res.json({ success: kicked, message: kicked ? "Kicked and removed avatar" : "User not found online" });
@@ -741,6 +747,4 @@ server.listen(PORT, '0.0.0.0', () => {
     logger.info(`${c.y}🛡️ Stability Patch (Anti-Kick RP Friendly): ACTIVE${c.rst}`);
     logger.info(`${c.y}💾 SQLite WAL Database System: ACTIVE${c.rst}`);
     logger.info(`${c.p}==========================================${c.rst}\n`);
-    
-    sendToDiscord(`🚀 **[SYSTEM START]** ระบบ Figura พร้อมใช้งานแล้ว! `);
 });
