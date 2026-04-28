@@ -154,7 +154,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// 🚀 [CORS PATCH] อนุญาตให้หน้าเว็บ Dashboard เรียกใช้ API Kick ได้
 app.use(cors({
     origin: '*', 
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -361,27 +360,30 @@ setTimeout(runSync, 1000);
 const syncInterval = setInterval(runSync, SYNC_INTERVAL_MS); 
 
 // ==========================================
-// 🚀 REST API ENDPOINTS
+// 🚨 KICK API (ระบบยึดของกลาง: เตะ + ลบไฟล์ .moon ทิ้ง)
 // ==========================================
-
-// 🛡️ API สำหรับให้หน้า Dashboard เตะผู้เล่น
 app.post('/api/admin/kick-avatar', (req, res) => {
-    if (req.headers['x-admin-key'] !== ADMIN_SECRET) return res.status(403).json({ success: false, error: "Unauthorized - Invalid Secret Key" });
+    if (req.headers['x-admin-key'] !== ADMIN_SECRET) return res.status(403).json({ error: "Unauthorized" });
     
     const targetUsername = req.body.username?.toLowerCase();
-    if (!targetUsername) return res.status(400).json({ success: false, error: "Missing username" });
+    if (!targetUsername) return res.status(400).json({ error: "Missing username" });
 
     let kicked = false;
     for (const [tokenStr, userInfo] of tokens.entries()) {
         if (userInfo.usernameLower === targetUsername) {
-            userInfo.activeSockets.forEach(ws => { 
-                try { ws.close(1000, "Kicked by Admin"); } catch(e) {} 
-            });
+            // 1. ตัดการเชื่อมต่อผู้เล่น (เด้ง Cloud Disconnected)
+            userInfo.activeSockets.forEach(ws => { try { ws.terminate(); } catch(e){} });
             tokens.delete(tokenStr);
             kicked = true;
             
+            // 2. ลบไฟล์ .moon ออกจากเซิร์ฟเวอร์ (ยึดของกลาง)
             fsp.unlink(path.join(avatarsDir, `${userInfo.uuid}.moon`)).catch(() => {});
-            sendToDiscord(`🚨 **[Admin Action]** บังคับลบโมเดลและเตะ \`${targetUsername}\` ออกจากระบบ`);
+            
+            // 3. เคลียร์แคชระบบ เพื่อให้คนอื่นเลิกโหลดโมเดลนี้
+            hashCache.delete(userInfo.uuid); 
+            apiJsonCache.delete(userInfo.uuid);
+            
+            sendToDiscord(`🚨 **[Admin Action]** สั่งเตะและยึดโมเดล (ลบไฟล์) ของ \`${targetUsername}\` ออกจากระบบแล้ว`);
         }
     }
     res.json({ success: kicked, message: kicked ? "Kicked and removed avatar" : "User not found online" });
@@ -590,7 +592,7 @@ app.use((err, req, res, next) => {
 });
 
 // ==========================================
-// ⚡ WEBSOCKET ENGINE (ULTRA ANTI-DROP EDITION)
+// ⚡ WEBSOCKET (ULTRA ANTI-DROP EDITION)
 // ==========================================
 const server = http.createServer(app);
 server.keepAliveTimeout = 120000;  
@@ -716,9 +718,6 @@ const wsPingInterval = setInterval(() => {
 
 wss.on('close', () => clearInterval(wsPingInterval));
 
-// ==========================================
-// 🛡️ SHUTDOWN SAFETY
-// ==========================================
 const shutdown = () => {
     logger.info(`\n${c.y}⚠️ กำลังเซฟข้อมูลและปิดเซิร์ฟเวอร์อย่างปลอดภัย...${c.rst}`);
     clearInterval(syncInterval); clearInterval(gcInterval); clearInterval(wsPingInterval);
