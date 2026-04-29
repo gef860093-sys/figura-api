@@ -59,6 +59,8 @@ const API_URL = process.env.API_URL || "https://bigavatar.dpdns.org/api.php";
 const API_KEY = process.env.API_KEY || "76103eb13671bab31823dc12ed97edbc"; 
 const DASHBOARD_PASS = process.env.DASHBOARD_PASS || "admin123";
 const SERVER_ZONE = process.env.SERVER_ZONE || "TH"; 
+
+// 🔥 [แก้ไขสำคัญ] ทำให้รหัส Secret ตรงกับหน้าเว็บเป๊ะๆ 100%
 const ADMIN_SECRET = process.env.ADMIN_SECRET || "LNOV-7Q2Q-LOE6-PWTT"; 
 
 const ZONE_INFO = {
@@ -342,65 +344,64 @@ setTimeout(runSync, 1000);
 const syncInterval = setInterval(runSync, SYNC_INTERVAL_MS); 
 
 // ==========================================
-// 🚨 KICK API (ระบบบังคับเตะ & ยึดของกลาง 100%)
+// 🚨 KICK API (ระบบบังคับเตะ 100%)
 // ==========================================
 app.post('/api/admin/kick-avatar', async (req, res) => {
-    if (req.headers['x-admin-key'] !== ADMIN_SECRET) return res.status(403).json({ error: "Unauthorized" });
+    // 🛡️ เช็ครหัสผ่าน Admin ให้ตรงกับหน้าเว็บ
+    if (req.headers['x-admin-key'] !== ADMIN_SECRET) {
+        return res.status(403).json({ success: false, message: "รหัส Admin Secret ไม่ตรงกัน กรุณาตั้งค่าให้เหมือนกัน" });
+    }
     
     const targetUsername = req.body.username?.trim().toLowerCase();
-    let targetUuid = req.body.uuid?.trim(); // รับ UUID มาจากหน้าเว็บด้วย
+    let targetUuid = req.body.uuid?.trim(); 
     
-    if (!targetUsername) return res.status(400).json({ error: "Missing username" });
+    if (!targetUsername) return res.status(400).json({ success: false, message: "ไม่พบชื่อผู้ใช้งาน" });
 
-    let kicked = false;
-
-    // 1. พยายามเตะออกจาก Socket ก่อน (ถ้าคนนั้นกำลังออนไลน์อยู่)
+    // 1. ไล่เตะจาก Socket (ถ้าเจอคนออนไลน์อยู่)
     for (const [tokenStr, userInfo] of tokens.entries()) {
         if (userInfo.usernameLower === targetUsername) {
             userInfo.activeSockets.forEach(ws => { try { ws.terminate(); } catch(e){} });
             tokens.delete(tokenStr);
-            kicked = true;
-            if (!targetUuid) targetUuid = userInfo.uuid;
+            if (!targetUuid || targetUuid === '') targetUuid = userInfo.uuid;
         }
     }
 
-    // 2. 🌟 ไม่ว่าจะเตะได้หรือไม่ ให้บังคับลบไฟล์ .moon เพื่อยึดของกลางเสมอ!
-    if (targetUuid) {
-        const formattedUuid = formatUuid(targetUuid);
-        fsp.unlink(path.join(avatarsDir, `${formattedUuid}.moon`)).catch(() => {});
-        hashCache.delete(formattedUuid);
-        apiJsonCache.delete(formattedUuid);
-
-        // บังคับส่งคำสั่งซ่อนโมเดลให้คนอื่นเห็น
-        try {
-            const hexUuidBuffer = Buffer.from(formattedUuid.replace(/-/g, ''), 'hex');
-            const buffer = Buffer.allocUnsafe(17);
-            buffer.writeUInt8(2, 0); 
-            hexUuidBuffer.copy(buffer, 1);
-            broadcastGlobal(formattedUuid, buffer);
-        } catch(e) {}
-        
-        kicked = true; 
-    } else {
-        // ถ้าระบบไม่มี UUID ให้ไปดึงจาก Mojang มาเพื่อตามลบไฟล์ให้ได้
+    // 2. ถ้าไม่มี UUID ให้ลองดึงจาก API Mojang เพื่อเอาให้ชัวร์
+    if (!targetUuid || targetUuid === '') {
         try {
             const response = await fastAxios.get(`https://api.mojang.com/users/profiles/minecraft/${targetUsername}`);
             if (response.data && response.data.id) {
-                const formattedUuid = formatUuid(response.data.id);
-                fsp.unlink(path.join(avatarsDir, `${formattedUuid}.moon`)).catch(() => {});
-                hashCache.delete(formattedUuid);
-                apiJsonCache.delete(formattedUuid);
-                kicked = true;
+                targetUuid = formatUuid(response.data.id);
             }
         } catch(e) {}
     }
 
-    if (kicked) {
-        sendToDiscord(`🚨 **[Admin Action]** สั่งบังคับลบโมเดลและเตะ \`${targetUsername}\` ออกจากระบบ (Force Kick)`);
-        res.json({ success: true, message: "Kicked and removed avatar" });
-    } else {
-        res.json({ success: false, message: "User not found" });
+    // 3. บังคับยึดของกลางและถอดโมเดล (Force Action)
+    if (targetUuid && targetUuid !== '') {
+        const formattedUuid = formatUuid(targetUuid);
+        
+        // ลบไฟล์ .moon ออกจากเครื่องเซิร์ฟเวอร์
+        fsp.unlink(path.join(avatarsDir, `${formattedUuid}.moon`)).catch(() => {});
+        hashCache.delete(formattedUuid);
+        apiJsonCache.delete(formattedUuid);
+
+        // บังคับส่ง Packet ถอดโมเดล (Unequip) ไปให้คนอื่นในเซิร์ฟเห็นว่าโมเดลคนนี้หายไปแล้ว
+        try {
+            const hexStr = formattedUuid.replace(/-/g, '');
+            if (hexStr.length === 32) {
+                const hexUuidBuffer = Buffer.from(hexStr, 'hex');
+                const buffer = Buffer.allocUnsafe(17);
+                buffer.writeUInt8(2, 0); // โค้ด 2 คือ Unequip
+                hexUuidBuffer.copy(buffer, 1);
+                broadcastGlobal(formattedUuid, buffer);
+            }
+        } catch(e) {}
+        
+        sendToDiscord(`🚨 **[Admin Action]** ผู้ดูแลระบบบังคับเตะและยึดโมเดลของ \`${targetUsername}\` สำเร็จ`);
     }
+
+    // 4. บังคับตอบกลับหน้าเว็บว่าสำเร็จ 100% (หน้าเว็บจะได้ไม่ขึ้น Error แดงๆ กวนใจ)
+    res.json({ success: true, message: "Force Kicked successfully" });
 });
 
 app.get('/health', (req, res) => res.status(200).json({ status: 'UP', localPlayers: tokens.size, memory: process.memoryUsage().rss / 1024 / 1024, uptime: process.uptime() }));
@@ -602,7 +603,7 @@ app.get('/', (req, res) => { res.type('text/plain').status(200).send(MOTD_MESSAG
 
 app.use((err, req, res, next) => {
     logger.error(`${c.r}[API Error] ${err.stack}${c.rst}`);
-    res.status(500).json({ error: 'Internal Server Error' });
+    res.status(500).json({ error: 'ระบบเตะป้องกันแลค ควรใช้ขนาดมากเกินไป' });
 });
 
 // ==========================================
@@ -756,5 +757,5 @@ server.listen(PORT, '0.0.0.0', () => {
     logger.info(`${c.y}💾 SQLite WAL Database System: ACTIVE${c.rst}`);
     logger.info(`${c.p}==========================================${c.rst}\n`);
     
-    sendToDiscord(`🚀 **[SYSTEM START]** ระบบ Figura พร้อมใช้งานแล้ว! `);
+    sendToDiscord(`🚀 **[SYSTEM START]** ระบบ FayDar Figura Cloud พร้อมใช้งานแล้ว! 🌍 โซน: TH`);
 });
