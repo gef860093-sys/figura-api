@@ -52,7 +52,7 @@ const PORT = process.env.PORT || 80;
 let LIMIT_BYTES = 50 * 1024 * 1024; 
 
 // 🔥 ปิดระบบล็อค Whitelist ให้ผู้เล่นทุกคนเข้าได้อัตโนมัติ!
-const ENABLE_WHITELIST = false; 
+const ENABLE_WHITELIST = true; 
 
 const TOKEN_MAX_AGE_MS = 12 * 60 * 60 * 1000; 
 let UPLOAD_COOLDOWN_MS = 3 * 1000; 
