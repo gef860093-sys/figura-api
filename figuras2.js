@@ -23,9 +23,6 @@ const Database = require('better-sqlite3');
 
 EventEmitter.defaultMaxListeners = 15000;
 
-// ==========================================
-// 🎨 ระบบสีและ Log สำหรับ Console
-// ==========================================
 const c = { g: '\x1b[32m', b: '\x1b[36m', y: '\x1b[33m', r: '\x1b[31m', p: '\x1b[35m', rst: '\x1b[0m' };
 const logTime = () => `[${new Date().toLocaleTimeString('th-TH')}]`;
 const startTime = Date.now();
@@ -57,7 +54,6 @@ let UPLOAD_COOLDOWN_MS = 3 * 1000;
 let MOTD_TITLE = "FAYDAR";
 let MOTD_SUBTITLE = "Welcome FayDarCloud";
 
-// 🔗 เชื่อมโยงข้อมูลที่เจาะจงของคุณ
 const DISCORD_WEBHOOK_URL = process.env.DISCORD_WEBHOOK_URL || "https://ptb.discord.com/api/webhooks/1493712415831887955/-DO5NvlZUp83EDkr7JQb13QHdrTNeveugQwXy2Ni74fxxbbw4PYcuQHqoUgs2Q7cOaz-"; 
 const API_URL = process.env.API_URL || "https://bigavatar.dpdns.org/api.php"; 
 const API_KEY = process.env.API_KEY || "76103eb13671bab31823dc12ed97edbc"; 
@@ -98,9 +94,6 @@ let MOTD_MESSAGE = generateMotd();
 const SYNC_INTERVAL_MS = 3000;    
 const WS_PING_INTERVAL_MS = 25000; 
 
-// ==========================================
-// 🔗 REDIS & DATABASE SETUP
-// ==========================================
 const redisPub = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL) : null;
 const redisSub = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL) : null;
 
@@ -137,16 +130,11 @@ const saveStatsDB = () => {
     } catch (e) { logger.error(`[DB Error] ${e.message}`); }
 };
 
-// ==========================================
-// 🌐 EXPRESS APP & MIDDLEWARE
-// ==========================================
 const app = express();
 app.set('trust proxy', 1);
 
 const bannedIPs = new Map();
 app.use(express.json()); 
-
-// 🛡️ ป้องกันสแปม IP
 app.use((req, res, next) => {
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
     if (bannedIPs.has(ip)) {
@@ -157,7 +145,6 @@ app.use((req, res, next) => {
     next();
 });
 
-// 🔓 อนุญาต CORS สำหรับ Dashboard
 app.use(cors({
     origin: '*', 
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -185,9 +172,6 @@ app.use('/api/', (req, res, next) => {
     next(); 
 }, apiLimiter);
 
-// ==========================================
-// 🧠 CACHE & STATE MANAGEMENT
-// ==========================================
 class LRUCache {
     constructor(limit) { this.map = new Map(); this.limit = limit; }
     get(key) {
@@ -254,9 +238,6 @@ const broadcastGlobal = (uuid, buffer, excludeWs = null) => {
     if (redisPub) redisPub.publish('avatar-broadcast', JSON.stringify({ uuid: uuid, bufferHex: buffer.toString('hex') })).catch(()=>{});
 };
 
-// ==========================================
-// 🗑️ GARBAGE COLLECTION & BACKUP
-// ==========================================
 const gcInterval = setInterval(async () => { 
     const now = Date.now();
     saveStatsDB(); 
@@ -302,9 +283,6 @@ setInterval(async () => {
     } catch (e) {}
 }, 60 * 60 * 1000);
 
-// ==========================================
-// 🔄 DATABASE SYNC (API POLLING)
-// ==========================================
 const runSync = async () => {
     if (isSyncing) return; 
     isSyncing = true;
@@ -364,33 +342,65 @@ setTimeout(runSync, 1000);
 const syncInterval = setInterval(runSync, SYNC_INTERVAL_MS); 
 
 // ==========================================
-// 🚨 KICK API (ระบบยึดของกลาง: เตะ + ลบไฟล์ .moon ออกจากเซิร์ฟเวอร์)
+// 🚨 KICK API (ระบบบังคับเตะ & ยึดของกลาง 100%)
 // ==========================================
-app.post('/api/admin/kick-avatar', (req, res) => {
+app.post('/api/admin/kick-avatar', async (req, res) => {
     if (req.headers['x-admin-key'] !== ADMIN_SECRET) return res.status(403).json({ error: "Unauthorized" });
     
-    const targetUsername = req.body.username?.toLowerCase();
+    const targetUsername = req.body.username?.trim().toLowerCase();
+    let targetUuid = req.body.uuid?.trim(); // รับ UUID มาจากหน้าเว็บด้วย
+    
     if (!targetUsername) return res.status(400).json({ error: "Missing username" });
 
     let kicked = false;
+
+    // 1. พยายามเตะออกจาก Socket ก่อน (ถ้าคนนั้นกำลังออนไลน์อยู่)
     for (const [tokenStr, userInfo] of tokens.entries()) {
         if (userInfo.usernameLower === targetUsername) {
-            // ตัดเน็ต
             userInfo.activeSockets.forEach(ws => { try { ws.terminate(); } catch(e){} });
             tokens.delete(tokenStr);
             kicked = true;
-            
-            // ลบไฟล์ยึดของกลาง
-            fsp.unlink(path.join(avatarsDir, `${userInfo.uuid}.moon`)).catch(() => {});
-            
-            // เคลียร์แคช
-            hashCache.delete(userInfo.uuid); 
-            apiJsonCache.delete(userInfo.uuid);
-            
-            sendToDiscord(`🚨 **[Admin Action]** สั่งเตะและยึดโมเดลของ \`${targetUsername}\` ออกจากระบบแล้ว`);
+            if (!targetUuid) targetUuid = userInfo.uuid;
         }
     }
-    res.json({ success: kicked, message: kicked ? "Kicked and removed avatar" : "User not found online" });
+
+    // 2. 🌟 ไม่ว่าจะเตะได้หรือไม่ ให้บังคับลบไฟล์ .moon เพื่อยึดของกลางเสมอ!
+    if (targetUuid) {
+        const formattedUuid = formatUuid(targetUuid);
+        fsp.unlink(path.join(avatarsDir, `${formattedUuid}.moon`)).catch(() => {});
+        hashCache.delete(formattedUuid);
+        apiJsonCache.delete(formattedUuid);
+
+        // บังคับส่งคำสั่งซ่อนโมเดลให้คนอื่นเห็น
+        try {
+            const hexUuidBuffer = Buffer.from(formattedUuid.replace(/-/g, ''), 'hex');
+            const buffer = Buffer.allocUnsafe(17);
+            buffer.writeUInt8(2, 0); 
+            hexUuidBuffer.copy(buffer, 1);
+            broadcastGlobal(formattedUuid, buffer);
+        } catch(e) {}
+        
+        kicked = true; 
+    } else {
+        // ถ้าระบบไม่มี UUID ให้ไปดึงจาก Mojang มาเพื่อตามลบไฟล์ให้ได้
+        try {
+            const response = await fastAxios.get(`https://api.mojang.com/users/profiles/minecraft/${targetUsername}`);
+            if (response.data && response.data.id) {
+                const formattedUuid = formatUuid(response.data.id);
+                fsp.unlink(path.join(avatarsDir, `${formattedUuid}.moon`)).catch(() => {});
+                hashCache.delete(formattedUuid);
+                apiJsonCache.delete(formattedUuid);
+                kicked = true;
+            }
+        } catch(e) {}
+    }
+
+    if (kicked) {
+        sendToDiscord(`🚨 **[Admin Action]** สั่งบังคับลบโมเดลและเตะ \`${targetUsername}\` ออกจากระบบ (Force Kick)`);
+        res.json({ success: true, message: "Kicked and removed avatar" });
+    } else {
+        res.json({ success: false, message: "User not found" });
+    }
 });
 
 app.get('/health', (req, res) => res.status(200).json({ status: 'UP', localPlayers: tokens.size, memory: process.memoryUsage().rss / 1024 / 1024, uptime: process.uptime() }));
@@ -722,9 +732,6 @@ const wsPingInterval = setInterval(() => {
 
 wss.on('close', () => clearInterval(wsPingInterval));
 
-// ==========================================
-// 🛡️ SHUTDOWN SAFETY
-// ==========================================
 const shutdown = () => {
     logger.info(`\n${c.y}⚠️ กำลังเซฟข้อมูลและปิดเซิร์ฟเวอร์อย่างปลอดภัย...${c.rst}`);
     clearInterval(syncInterval); clearInterval(gcInterval); clearInterval(wsPingInterval);
@@ -749,6 +756,5 @@ server.listen(PORT, '0.0.0.0', () => {
     logger.info(`${c.y}💾 SQLite WAL Database System: ACTIVE${c.rst}`);
     logger.info(`${c.p}==========================================${c.rst}\n`);
     
-    // 📢 ส่งข้อความแจ้งเตือนเข้า Discord ทันทีที่เซิร์ฟเวอร์รันสำเร็จ
-    sendToDiscord(`🚀 **[SYSTEM START]** ระบบ FayDar Figura Cloud พร้อมใช้งานแล้ว! 🌍 โซน: TH`);
+    sendToDiscord(`🚀 **[SYSTEM START]** ระบบ Figura พร้อมใช้งานแล้ว! `);
 });
