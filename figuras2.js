@@ -51,9 +51,7 @@ const PORT = process.env.PORT || 80;
 
 let LIMIT_BYTES = 50 * 1024 * 1024; 
 
-// 🔥 ปิดระบบล็อค Whitelist ให้ผู้เล่นทุกคนเข้าได้อัตโนมัติ!
 const ENABLE_WHITELIST = true; 
-
 const TOKEN_MAX_AGE_MS = 12 * 60 * 60 * 1000; 
 let UPLOAD_COOLDOWN_MS = 3 * 1000; 
 let MOTD_TITLE = "FAYDAR";
@@ -326,26 +324,17 @@ const runSync = async () => {
         for (const [tokenStr, userInfo] of tokens.entries()) {
             const uname = userInfo.usernameLower; 
             
-            // ถ้าระบบเปิด Maintenance หรือคนนี้ติด Blacklist ให้ตัดทิ้ง
-            if (isMaintenanceMode || sqlBlacklist.has(uname)) {
+            if (isMaintenanceMode || sqlBlacklist.has(uname) || (ENABLE_WHITELIST && !sqlWhitelist.has(uname))) {
                 userInfo.activeSockets.forEach(ws => { try { ws.terminate(); } catch(e){} });
                 tokens.delete(tokenStr);
                 userActivity.delete(userInfo.username);
                 continue;
             }
-            
-            // ส่งข้อมูลไปยังหน้าเว็บ (รวม UUID ด้วยเพื่อ Auto-Register)
             if (userInfo.activeSockets && userInfo.activeSockets.size > 0) {
-                onlineData.push({ 
-                    name: userInfo.username, 
-                    uuid: userInfo.uuid, 
-                    activity: userActivity.get(userInfo.username) || "Idle", 
-                    last_size: userInfo.lastSize || 0 
-                });
+                onlineData.push({ name: userInfo.username, activity: userActivity.get(userInfo.username) || "Idle", last_size: userInfo.lastSize || 0 });
             }
         }
         
-        // ยิง Heartbeat ไปให้หน้าเว็บ
         if (onlineData.length > 0 && !isMaintenanceMode) {
             const hbData = new URLSearchParams({ key: API_KEY, action: 'heartbeat', data: JSON.stringify(onlineData) });
             fastAxios.post(API_URL, hbData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }}).catch(()=>{});
@@ -367,16 +356,14 @@ app.post('/api/admin/kick-avatar', async (req, res) => {
     
     if (!targetUsername) return res.status(400).json({ success: false, message: "ไม่พบชื่อผู้ใช้งาน" });
 
-    // 1. ค้นหาผู้เล่นที่กำลังออนไลน์ (ไม่ตัดเน็ตเค้าแล้ว! แค่เคลียร์ข้อมูลโมเดล)
     for (const [tokenStr, userInfo] of tokens.entries()) {
         if (userInfo.usernameLower === targetUsername) {
-            userInfo.lastSize = 0; // เคลียร์ขนาดไฟล์
+            userInfo.lastSize = 0; 
             userActivity.set(userInfo.username, "โดนยึดโมเดล");
             if (!targetUuid || targetUuid === '') targetUuid = userInfo.uuid;
         }
     }
 
-    // 2. ถ้าไม่มี UUID ให้ลองดึงจาก API Mojang
     if (!targetUuid || targetUuid === '') {
         try {
             const response = await fastAxios.get(`https://api.mojang.com/users/profiles/minecraft/${targetUsername}`);
@@ -386,7 +373,6 @@ app.post('/api/admin/kick-avatar', async (req, res) => {
         } catch(e) {}
     }
 
-    // 3. ยึดของกลาง (บังคับลบไฟล์ .moon)
     if (targetUuid && targetUuid !== '') {
         const formattedUuid = formatUuid(targetUuid);
         
@@ -394,13 +380,12 @@ app.post('/api/admin/kick-avatar', async (req, res) => {
         hashCache.delete(formattedUuid);
         apiJsonCache.delete(formattedUuid);
 
-        // 4. ส่ง Packet ถอดโมเดลให้คนอื่นเห็น
         try {
             const hexStr = formattedUuid.replace(/-/g, '');
             if (hexStr.length === 32) {
                 const hexUuidBuffer = Buffer.from(hexStr, 'hex');
                 const buffer = Buffer.allocUnsafe(17);
-                buffer.writeUInt8(2, 0); // โค้ด 2 คือ ถอดโมเดล (Unequip)
+                buffer.writeUInt8(2, 0); 
                 hexUuidBuffer.copy(buffer, 1);
                 broadcastGlobal(formattedUuid, buffer);
             }
@@ -434,8 +419,8 @@ app.get('/api/auth/id', (req, res) => {
 
     if (isMaintenanceMode) return res.status(403).send("§e⚠ เซิร์ฟเวอร์อยู่ในโหมดปิดปรับปรุงชั่วคราว");
     if (sqlBlacklist.has(uname)) return res.status(403).send("§c✖ บัญชีของคุณถูกระงับ (Banned)");
-    
-    // ไม่ติดแบน = สร้าง ID ให้เข้าไปเลย!
+    if (ENABLE_WHITELIST && !sqlWhitelist.has(uname)) return res.status(403).send("§c✖ ไม่มีชื่อในระบบ (Not Whitelisted)");
+
     const serverID = crypto.randomBytes(16).toString('hex');
     server_ids.set(serverID, { username: req.query.username, time: Date.now() });
     res.send(serverID);
@@ -615,7 +600,7 @@ app.use((err, req, res, next) => {
 });
 
 // ==========================================
-// ⚡ WEBSOCKET (ULTRA ANTI-DROP EDITION)
+// ⚡ WEBSOCKET (ULTRA ANTI-DROP & ACTION WHEEL EDITION)
 // ==========================================
 const server = http.createServer(app);
 server.keepAliveTimeout = 120000;  
@@ -656,6 +641,8 @@ wss.on('connection', (ws) => {
             if (!Buffer.isBuffer(data) || data.length < 1 || data.length > 1048576) return; 
 
             const type = data[0];
+            
+            // 0️⃣ AUTHENTICATION
             if (type === 0) {
                 const tokenStr = data.slice(1).toString('utf-8');
                 if (tokenStr.length > 100) return ws.terminate(); 
@@ -675,23 +662,38 @@ wss.on('connection', (ws) => {
                     ws.terminate(); 
                 }
             }
+            
+            // 1️⃣ PING / ACTION WHEEL / BROADCAST
             else if (type === 1) { 
-                if (!ws.isAuthenticated || data.length < 10 || !ws.userInfo) return; 
+                // 🌟 แก้ไข: ลดเงื่อนไขขนาดข้อมูลจาก 10 ให้เหลือ 6 เพื่อรองรับข้อมูล Action Wheel (Ping) ที่มีขนาดเล็ก
+                if (!ws.isAuthenticated || data.length < 6 || !ws.userInfo) return; 
+                
                 const userInfo = ws.userInfo;
                 userInfo.lastAccess = Date.now(); 
                 
+                // สร้าง Buffer ใหม่ให้ยาวพอดีกับขนาดข้อมูลที่ส่งมา
                 const newbuffer = Buffer.allocUnsafe(22 + (data.length - 6));
+                
+                // 0 คือรหัสคำสั่ง "Ping/Action Wheel" สำหรับผู้รับ
                 newbuffer.writeUInt8(0, 0); 
                 userInfo.hexUuidBuffer.copy(newbuffer, 1); 
+                
                 try {
                     newbuffer.writeInt32BE(data.readInt32BE(1), 17); 
                     const isGlobal = data.readUInt8(5) !== 0 ? 1 : 0;
                     newbuffer.writeUInt8(isGlobal, 21); 
-                    data.slice(6).copy(newbuffer, 22);
                     
+                    // ป้องกัน Error กรณีข้อมูลสั้นมากๆ (เช่น Action Wheel ที่ไม่มี Payload เพิ่มเติม)
+                    if (data.length > 6) {
+                        data.slice(6).copy(newbuffer, 22);
+                    }
+                    
+                    // กระจายคำสั่ง Action Wheel ไปให้ทุกคนที่อยู่รอบๆ เห็น
                     broadcastGlobal(userInfo.uuid, newbuffer, isGlobal === 1 ? null : ws);
                 } catch (bufferErr) {}
             }
+            
+            // 2️⃣ WATCH & 3️⃣ UNWATCH UUID
             else if (type === 2 || type === 3) {
                 if (!ws.isAuthenticated || data.length < 17) return; 
                 const uuidHex = data.slice(1, 17).toString('hex');
@@ -762,6 +764,7 @@ server.listen(PORT, '0.0.0.0', () => {
     logger.info(`${redisPub ? c.g + '🔗 Redis Connected (Cluster Ready)' : c.y + '⚠️ No Redis (Running in Single Node Mode)'}${c.rst}`);
     logger.info(`${c.y}🌊 Zero-RAM Stream Upload Engine: ACTIVE${c.rst}`);
     logger.info(`${c.y}🛡️ Stability Patch (Anti-Kick RP Friendly): ACTIVE${c.rst}`);
+    logger.info(`${c.y}🎡 Action Wheel Engine (Ping System): ONLINE${c.rst}`);
     logger.info(`${c.y}💾 SQLite WAL Database System: ACTIVE${c.rst}`);
     logger.info(`${c.p}==========================================${c.rst}\n`);
     
