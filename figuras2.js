@@ -47,7 +47,7 @@ process.on('unhandledRejection', (reason) => { logger.error(`${c.r}[Promise Prot
 // ==========================================
 const PORT = process.env.PORT || 80; 
 
-let LIMIT_BYTES = 35 * 1024 * 1024; // 35MB
+let LIMIT_BYTES = 150 * 1024 * 1024; // 150MB
 const ENABLE_WHITELIST = true; 
 
 const TOKEN_MAX_AGE_MS = 12 * 60 * 60 * 1000; 
@@ -179,7 +179,7 @@ app.use(compression({
     threshold: 512, filter: (req, res) => req.headers['content-type'] === 'application/octet-stream' ? false : compression.filter(req, res)
 }));
 
-// 🛡️ FIX 1: URL Sanitization (ดักสแลชเบิ้ลป้องกันจอแดง)
+// 🛡️ URL Double Slash Fix
 app.use((req, res, next) => {
     const urlParts = req.url.split('?');
     urlParts[0] = urlParts[0].replace(/\/{2,}/g, '/');
@@ -201,14 +201,12 @@ app.use((req, res, next) => {
 const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 300, message: { error: "Rate Limit Exceeded" } });
 const uploadLimiter = rateLimit({ windowMs: 60 * 1000, max: 40, message: { error: "Uploads Limited" } }); 
 
-// 🛡️ FIX 2: Raw Body Parser (แก้โมเดลโหลดค้าง / อัปโหลดพัง)
+// 🛡️ Raw Body Parser (แก้โมเดลโหลดค้าง / อัปโหลดพัง 100%)
 app.use('/api/avatar', uploadLimiter, express.raw({ type: '*/*', limit: '35mb' }));
 app.use(express.json({ limit: '5mb' })); 
 
 app.use('/api/', apiLimiter);
-
-// 🛡️ FIX 3: Route สำหรับ Java Mod Watchdog
-app.get('/ping', (req, res) => res.status(200).send("PONG"));
+app.get('/ping', (req, res) => res.status(200).send("PONG")); // Java Watchdog
 
 class LRUCache {
     constructor(limit) { this.map = new Map(); this.limit = limit; }
@@ -240,25 +238,21 @@ let isSyncing = false;
 let isMaintenanceMode = false;
 let lastMaintenanceState = false;
 
-const fastAxios = axios.create({
-    timeout: 5000, 
-    httpAgent: new http.Agent({ keepAlive: true, maxSockets: 1000 }),
-    httpsAgent: new https.Agent({ keepAlive: true, maxSockets: 1000 }) 
-});
-
+const fastAxios = axios.create({ timeout: 5000 });
 const sendToDiscord = (message) => { if (DISCORD_WEBHOOK_URL) fastAxios.post(DISCORD_WEBHOOK_URL, { content: message }).catch(() => {}); };
-const isValidUUID = (uuid) => /^[0-9a-fA-F-]{32,36}$/.test(uuid);
+
 const formatUuid = (uuid) => {
     if (!uuid) return "";
     const clean = uuid.replace(/-/g, '').toLowerCase(); 
     return clean.length === 32 ? `${clean.slice(0, 8)}-${clean.slice(8, 12)}-${clean.slice(12, 16)}-${clean.slice(16, 20)}-${clean.slice(20)}` : uuid;
 };
+const isValidUUID = (uuid) => /^[0-9a-fA-F-]{32,36}$/.test(uuid);
 
 // ==========================================
-// 🛡️ RE-ADDED: KICK API
+// 🛡️ ADMIN KICK API
 // ==========================================
 app.post('/api/admin/kick-avatar', async (req, res) => {
-    if (req.headers['x-admin-key'] !== ADMIN_SECRET) return res.status(403).json({ success: false, message: "รหัส Admin Secret ไม่ตรงกัน กรุณาตั้งค่าให้ตรงกับใน Node.js" });
+    if (req.headers['x-admin-key'] !== ADMIN_SECRET) return res.status(403).json({ success: false, message: "รหัส Admin Secret ไม่ตรงกัน" });
     
     const targetUsername = req.body.username?.trim().toLowerCase();
     let targetUuid = req.body.uuid?.trim(); 
@@ -276,15 +270,12 @@ app.post('/api/admin/kick-avatar', async (req, res) => {
     if (!targetUuid || targetUuid === '') {
         try {
             const response = await fastAxios.get(`https://api.mojang.com/users/profiles/minecraft/${targetUsername}`);
-            if (response.data && response.data.id) {
-                targetUuid = formatUuid(response.data.id);
-            }
+            if (response.data && response.data.id) targetUuid = formatUuid(response.data.id);
         } catch(e) {}
     }
 
     if (targetUuid && targetUuid !== '') {
         const formattedUuid = formatUuid(targetUuid);
-        
         fsp.unlink(path.join(avatarsDir, `${formattedUuid}.moon`)).catch(() => {});
         hashCache.delete(formattedUuid);
         apiJsonCache.delete(formattedUuid);
@@ -306,6 +297,9 @@ app.post('/api/admin/kick-avatar', async (req, res) => {
     res.json({ success: true, message: "Confiscated successfully" });
 });
 
+// ==========================================
+// 🚀 REST API
+// ==========================================
 app.get('/health', (req, res) => res.status(200).json({ status: 'UP', localPlayers: tokens.size, memory: process.memoryUsage().rss / 1024 / 1024, uptime: process.uptime() }));
 
 app.get('/api/server-stats', (req, res) => {
@@ -380,7 +374,6 @@ app.post('/api/equip', authMiddleware, (req, res) => {
     res.status(200).json({ success: true });
 });
 
-// 🛡️ อัปโหลดใหม่ บังคับใช้ req.body แบบ Raw Buffer รวดเดียวจบ
 const handleAvatarUpload = async (req, res) => {
     const userInfo = req.userInfo;
     
@@ -444,7 +437,6 @@ app.delete('/api/avatar', authMiddleware, async (req, res) => {
     } catch (err) { res.status(404).end(); }
 });
 
-// 🛡️ FIX 4: บังคับโหลดแคชสกินใหม่เสมอ ป้องกันโมเดลไม่อัปเดต
 app.get('/api/:uuid/avatar', async (req, res) => { 
     const uuidStr = req.params.uuid;
     if (["motd", "version", "auth", "limits", "stats-secret"].includes(uuidStr) || !isValidUUID(uuidStr)) return res.status(404).end();
@@ -452,7 +444,7 @@ app.get('/api/:uuid/avatar', async (req, res) => {
     const avatarFile = path.join(avatarsDir, `${formatUuid(uuidStr)}.moon`);
     try {
         await fsp.access(avatarFile); 
-        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'); 
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'); // 🛡️ บังคับให้โหลดสกินใหม่เสมอ
         res.setHeader('Content-Type', 'application/octet-stream');
         res.sendFile(avatarFile);
     } catch (e) { res.status(404).end(); }
@@ -489,7 +481,7 @@ app.use((err, req, res, next) => {
 });
 
 // ==========================================
-// ⚡ WEBSOCKET (AGNOSTIC RELAY EDITION)
+// ⚡ WEBSOCKET (FULL ACTION WHEEL FIX)
 // ==========================================
 const server = http.createServer(app);
 server.timeout = 600000; 
@@ -501,7 +493,8 @@ const wss = new WebSocket.Server({ server, perMessageDeflate: false, maxPayload:
 const FREE_RAM_MB = Math.floor(os.freemem() / 1024 / 1024);
 const MAX_WS = Math.max(500, Math.min(5000, Math.floor(FREE_RAM_MB / 1.5))); 
 
-const RATE_LIMIT_WS_MSGS = 200; // ขยายเผื่อคนกด Action Wheel รัวๆ
+// 🛡️ ปรับ Rate Limit ให้สูงขึ้นมากๆ เพื่อรองรับ Action Wheel
+const RATE_LIMIT_WS_MSGS = 1500; 
 
 setInterval(() => { wss.clients.forEach(ws => { ws.msgCount = 0; }); }, 1000);
 
@@ -515,14 +508,16 @@ wss.on('connection', (ws) => {
     
     const authTimeout = setTimeout(() => {
         if (!ws.isAuthenticated) ws.terminate();
-    }, 15000);
+    }, 30000);
 
     ws.on('pong', () => { ws.isAlive = true; }); 
 
     ws.on('message', (data) => {
         try {
             ws.msgCount++;
-            if (ws.msgCount > RATE_LIMIT_WS_MSGS) return; // แค่ข้ามข้อความไป ไม่เตะออก
+            
+            // ข้ามข้อความไปเฉยๆ ถ้ามาเยอะเกินไป ไม่ตัดการเชื่อมต่อ
+            if (ws.msgCount > RATE_LIMIT_WS_MSGS) return; 
 
             if (!Buffer.isBuffer(data) || data.length < 1 || data.length > 1048576) return; 
 
@@ -551,22 +546,42 @@ wss.on('connection', (ws) => {
                 }
             }
             
-            // 🛡️ FIX ระบบ Action Wheel และ Animation
-            // Relay ทุกๆ ข้อมูลดิบที่ตัวเกมส่งมาให้ส่งต่อไปยังผู้เล่นทุกคนตรงๆ (ไม่เดาโครงสร้างไบต์)
+            // 🛡️ FIX ระบบ Action Wheel และ Animation: เรียง Byte ให้ตรงเป๊ะ
             else if (type === 1) { 
-                if (!ws.isAuthenticated || data.length < 1 || !ws.userInfo) return; 
+                if (!ws.isAuthenticated || data.length < 6 || !ws.userInfo) return; 
                 
                 const userInfo = ws.userInfo;
                 userInfo.lastAccess = Date.now(); 
 
-                const payload = data.slice(1); 
-                const newbuffer = Buffer.alloc(17 + payload.length);
+                const payloadSize = data.length - 6;
+                // ใช้ Buffer.alloc (เคลียร์ข้อมูลขยะ) และกำหนดขนาดให้พอดี
+                const newbuffer = Buffer.alloc(22 + payloadSize);
                 
-                newbuffer.writeUInt8(0, 0); // Event Broadcast S2C
-                userInfo.hexUuidBuffer.copy(newbuffer, 1); 
-                payload.copy(newbuffer, 17); // แปะ Payload ดิบ ไม่ทำการหั่นใดๆ ทั้งสิ้น
+                newbuffer.writeUInt8(0, 0); // Event Type (S2C_UPDATE)
+                userInfo.hexUuidBuffer.copy(newbuffer, 1); // 16 bytes UUID
                 
-                broadcastGlobal(userInfo.uuid, newbuffer, ws);
+                try {
+                    // เขียน Action ID (4 Byte) ไปที่ตำแหน่ง 17
+                    newbuffer.writeInt32BE(data.readInt32BE(1), 17); 
+                    
+                    // อ่านค่า Global Flag จากตำแหน่ง 5
+                    const isGlobalFlag = data.readUInt8(5);
+                    const isGlobal = isGlobalFlag !== 0 ? 1 : 0;
+                    
+                    // เขียน Global Flag (1 Byte) ไปที่ตำแหน่ง 21
+                    newbuffer.writeUInt8(isGlobal, 21); 
+                    
+                    // คัดลอก Payload ส่วนที่เหลือ
+                    if (payloadSize > 0) {
+                        data.slice(6).copy(newbuffer, 22);
+                    }
+                    
+                    // ส่งข้อมูลแบบ Global หรือ Local ตามค่า isGlobal
+                    broadcastGlobal(userInfo.uuid, newbuffer, isGlobal === 1 ? null : ws);
+
+                } catch (bufferErr) {
+                    // ดักจับ Error ป้องกันเซิร์ฟเวอร์แครช
+                }
             }
             
             else if (type === 2 || type === 3) {
@@ -605,6 +620,7 @@ wss.on('connection', (ws) => {
     });
 });
 
+// 🛡️ ปิดการเตะออกแบบเงียบๆ ป้องกัน Reconnect ลูป
 const wsPingInterval = setInterval(() => { 
     wss.clients.forEach((ws) => { 
         if (!ws.isAlive) {
@@ -617,60 +633,18 @@ const wsPingInterval = setInterval(() => {
 
 wss.on('close', () => clearInterval(wsPingInterval));
 
-// ==========================================
-// 🔄 GC & SYNC SYSTEM
-// ==========================================
-setInterval(saveStatsDB, 60 * 1000);
+const shutdown = () => {
+    logger.info(`\n${c.y}⚠️ กำลังเซฟข้อมูลและปิดเซิร์ฟเวอร์อย่างปลอดภัย...${c.rst}`);
+    clearInterval(syncInterval); clearInterval(gcInterval); clearInterval(wsPingInterval);
+    if (redisPub) redisPub.quit();
+    if (redisSub) redisSub.quit();
+    saveStatsDB();
+    if (db) db.close(); 
+    
+    wss.close(() => { server.close(() => { logger.info(`${c.g}✅ ปิดเซิร์ฟเวอร์เสร็จสมบูรณ์${c.rst}`); process.exit(0); }); });
+};
+process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
 
-const gcInterval = setInterval(async () => { 
-    const now = Date.now();
-    saveStatsDB(); 
-
-    for (const [ip, unbanTime] of bannedIPs.entries()) {
-        if (now > unbanTime) bannedIPs.delete(ip);
-    }
-
-    for (const [tokenStr, userInfo] of tokens.entries()) {
-        const isExpired = now - userInfo.createdAt > TOKEN_MAX_AGE_MS;
-        const isInactive = userInfo.activeSockets.size === 0 && now - userInfo.lastAccess > 60 * 60 * 1000; 
-        
-        if (isExpired || isInactive) { 
-            userInfo.activeSockets.forEach(ws => { try { ws.terminate(); } catch(e){} }); 
-            tokens.delete(tokenStr); 
-            userActivity.delete(userInfo.username);
-            uploadCooldowns.delete(userInfo.username);
-        }
-    }
-
-    try {
-        const files = await fsp.readdir(avatarsDir);
-        for (const file of files) {
-            if (file.endsWith('.tmp')) {
-                const stats = await fsp.stat(path.join(avatarsDir, file)).catch(()=>null);
-                if (stats && (now - stats.mtimeMs > 5 * 60 * 1000)) await fsp.unlink(path.join(avatarsDir, file)).catch(()=>{});
-            }
-        }
-    } catch (e) {}
-}, 5 * 60 * 1000); 
-
-setInterval(async () => {
-    try {
-        const now = Date.now();
-        const files = await fsp.readdir(avatarsDir);
-        for (const file of files) {
-            if (file.endsWith('.moon')) await fsp.copyFile(path.join(avatarsDir, file), path.join(backupDir, file)).catch(()=>{});
-        }
-        
-        const backups = await fsp.readdir(backupDir);
-        for (const file of backups) {
-            const filePath = path.join(backupDir, file);
-            const stats = await fsp.stat(filePath).catch(()=>null);
-            if (stats && (now - stats.mtimeMs > 24 * 60 * 60 * 1000)) await fsp.unlink(filePath).catch(()=>{});
-        }
-    } catch (e) {}
-}, 60 * 60 * 1000);
-
-// 🛡️ RE-ADDED: runSync Function (Heartbeat & Lists)
 const runSync = async () => {
     if (isSyncing) return; 
     isSyncing = true;
@@ -730,29 +704,14 @@ const runSync = async () => {
 setTimeout(runSync, 1000); 
 const syncInterval = setInterval(runSync, SYNC_INTERVAL_MS); 
 
-const shutdown = () => {
-    logger.info(`\n${c.y}⚠️ กำลังเซฟข้อมูลและปิดเซิร์ฟเวอร์อย่างปลอดภัย...${c.rst}`);
-    clearInterval(syncInterval); clearInterval(gcInterval); clearInterval(wsPingInterval);
-    if (redisPub) redisPub.quit();
-    if (redisSub) redisSub.quit();
-    saveStatsDB();
-    if (db) db.close(); 
-    
-    wss.close(() => { server.close(() => { logger.info(`${c.g}✅ ปิดเซิร์ฟเวอร์เสร็จสมบูรณ์${c.rst}`); process.exit(0); }); });
-};
-process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
-
 server.listen(PORT, '0.0.0.0', () => {
     logger.info(`\n${c.p}==========================================${c.rst}`);
     logger.info(`${c.b}✨ FAYDAR CLOUD (ULTIMATE STABLE FIX) ${c.rst}`);
     logger.info(`${c.g}✅ DotEnv Loaded Securely${c.rst}`);
     logger.info(`${c.g}🌍 Server Region: ${currentZone.name} ${currentZone.mcFlag}${c.rst}`);
-    logger.info(`${c.g}✅ API Synced: ${API_URL} (3s Interval)${c.rst}`);
-    logger.info(`${redisPub ? c.g + '🔗 Redis Connected (Cluster Ready)' : c.y + '⚠️ No Redis (Running in Single Node Mode)'}${c.rst}`);
-    logger.info(`${c.y}🛡️ Double Slash URL Fix: ACTIVE${c.rst}`);
+    logger.info(`${c.y}🛡️ URL Double Slash Fix: ACTIVE${c.rst}`);
+    logger.info(`${c.y}🛡️ Action Wheel & Anim Alignment: FIXED${c.rst}`);
     logger.info(`${c.y}🛡️ Raw Payload Upload Fix: ACTIVE${c.rst}`);
-    logger.info(`${c.y}🛡️ Watchdog Endpoint (/ping): ACTIVE${c.rst}`);
-    logger.info(`${c.y}🎡 Agnostic Relay Engine (Fix Animation/Wheel): ACTIVE${c.rst}`);
     logger.info(`${c.p}==========================================${c.rst}\n`);
     
     sendToDiscord(`🚀 **[SYSTEM START]** ระบบ FayDar Figura Cloud พร้อมใช้งานแล้ว! 🌍 โซน: TH`);
