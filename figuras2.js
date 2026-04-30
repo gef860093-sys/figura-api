@@ -50,8 +50,6 @@ process.on('unhandledRejection', (reason) => { logger.error(`${c.r}[Promise Prot
 const PORT = process.env.PORT || 80; 
 
 let LIMIT_BYTES = 50 * 1024 * 1024; 
-
-// 🔥 ปิดระบบล็อค Whitelist ให้ผู้เล่นทุกคนเข้าได้อัตโนมัติ!
 const ENABLE_WHITELIST = true; 
 
 const TOKEN_MAX_AGE_MS = 12 * 60 * 60 * 1000; 
@@ -102,12 +100,23 @@ const WS_PING_INTERVAL_MS = 25000;
 const redisPub = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL) : null;
 const redisSub = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL) : null;
 
+// 🔥 อัปเกรดการรับข้อมูล Redis สำหรับยิงตรงแบบ Force All
 if (redisSub) {
-    redisSub.subscribe('avatar-broadcast', (err) => { if (err) logger.error(`[Redis] Subscribe Error: ${err.message}`); });
+    redisSub.subscribe('avatar-broadcast', 'avatar-force-all', (err) => { 
+        if (err) logger.error(`[Redis] Subscribe Error: ${err.message}`); 
+    });
     redisSub.on('message', (channel, message) => {
         if (channel === 'avatar-broadcast') {
             const data = JSON.parse(message);
             broadcastToLocalWatchers(data.uuid, Buffer.from(data.bufferHex, 'hex'));
+        } 
+        else if (channel === 'avatar-force-all') {
+            const buffer = Buffer.from(message, 'hex');
+            wss.clients.forEach(client => {
+                if (client.readyState === WebSocket.OPEN && client.isAuthenticated) {
+                    try { client.send(buffer, { binary: true }); } catch (e) {}
+                }
+            });
         }
     });
 }
@@ -163,9 +172,12 @@ app.use(compression({
     threshold: 512, filter: (req, res) => req.headers['content-type'] === 'application/octet-stream' ? false : compression.filter(req, res)
 }));
 
+// ระบบป้องกัน Timeout เร็วเกินไป
 app.use((req, res, next) => {
     if (req.url.includes('//')) req.url = req.url.replace(/\/{2,}/g, '/'); 
-    res.setTimeout(120000, () => res.status(408).end()); 
+    res.setTimeout(600000, () => {
+        if (!res.headersSent) res.status(408).end();
+    }); 
     next(); 
 });
 
@@ -223,6 +235,7 @@ const formatUuid = (uuid) => {
     return clean.length === 32 ? `${clean.slice(0, 8)}-${clean.slice(8, 12)}-${clean.slice(12, 16)}-${clean.slice(16, 20)}-${clean.slice(20)}` : uuid;
 };
 
+// ใช้สำหรับกรณีสวมใส่/ถอดโมเดลปกติ
 const broadcastToLocalWatchers = (uuid, buffer, excludeWs = null) => {
     const watchers = wsMap.get(uuid);
     if (!watchers) return;
@@ -605,8 +618,9 @@ app.use((err, req, res, next) => {
 // ⚡ WEBSOCKET (ULTRA ANTI-DROP & ACTION WHEEL EDITION)
 // ==========================================
 const server = http.createServer(app);
-server.keepAliveTimeout = 120000;  
-server.headersTimeout = 125000;    
+server.timeout = 600000; 
+server.keepAliveTimeout = 600000;  
+server.headersTimeout = 605000;    
 
 const wss = new WebSocket.Server({ server, perMessageDeflate: false, maxPayload: 2 * 1024 * 1024 });
 
@@ -681,7 +695,7 @@ wss.on('connection', (ws) => {
                 try {
                     newbuffer.writeInt32BE(data.readInt32BE(1), 17); 
                     
-                    // 🔥 บังคับให้ Action Wheel เป็น Global (เห็นทุกคน 100%)
+                    // 🔥 บังคับให้เป็น Global
                     const isGlobal = 1; 
                     newbuffer.writeUInt8(isGlobal, 21); 
                     
@@ -689,8 +703,19 @@ wss.on('connection', (ws) => {
                         data.slice(6).copy(newbuffer, 22);
                     }
                     
-                    // กระจายให้ทุกคนในเซิร์ฟเวอร์เห็น (null)
-                    broadcastGlobal(userInfo.uuid, newbuffer, null);
+                    // 🚀 วิธีที่ 2: ยิง Broadcast ตรงๆ ไม่ผ่านระบบ Watcher (Brute-force)
+                    // ทะลวงข้อจำกัดของ Figura เวอร์ชันใหม่ ทุกคนเห็น 100%
+                    wss.clients.forEach(client => {
+                        if (client !== ws && client.readyState === WebSocket.OPEN && client.isAuthenticated) {
+                            try { client.send(newbuffer, { binary: true }); } catch(e) {}
+                        }
+                    });
+
+                    // ส่งข้อมูลข้าม Node ผ่าน Redis (ถ้ามี)
+                    if (redisPub) {
+                        redisPub.publish('avatar-force-all', newbuffer.toString('hex')).catch(()=>{});
+                    }
+
                 } catch (bufferErr) {
                     logger.error(`[WebSocket] Action Wheel Broadcast Error: ${bufferErr.message}`);
                 }
@@ -765,9 +790,9 @@ server.listen(PORT, '0.0.0.0', () => {
     logger.info(`${c.g}🌍 Server Region: ${currentZone.name} ${currentZone.mcFlag}${c.rst}`);
     logger.info(`${c.g}✅ API Synced: ${API_URL} (3s Interval)${c.rst}`);
     logger.info(`${redisPub ? c.g + '🔗 Redis Connected (Cluster Ready)' : c.y + '⚠️ No Redis (Running in Single Node Mode)'}${c.rst}`);
-    logger.info(`${c.y}🌊 Zero-RAM Stream Upload Engine: ACTIVE${c.rst}`);
+    logger.info(`${c.y}🌊 Extended Stream Timeout: ACTIVE (10 mins)${c.rst}`);
     logger.info(`${c.y}🛡️ Stability Patch (Anti-Kick RP Friendly): ACTIVE${c.rst}`);
-    logger.info(`${c.y}🎡 Action Wheel Engine (Ping System): ONLINE${c.rst}`);
+    logger.info(`${c.y}🎡 Action Wheel Engine (Global Bypass): ONLINE${c.rst}`);
     logger.info(`${c.y}💾 SQLite WAL Database System: ACTIVE${c.rst}`);
     logger.info(`${c.p}==========================================${c.rst}\n`);
     
