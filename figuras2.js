@@ -100,7 +100,6 @@ const WS_PING_INTERVAL_MS = 25000;
 const redisPub = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL) : null;
 const redisSub = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL) : null;
 
-// 🔥 อัปเกรดการรับข้อมูล Redis สำหรับยิงตรงแบบ Force All
 if (redisSub) {
     redisSub.subscribe('avatar-broadcast', 'avatar-force-all', (err) => { 
         if (err) logger.error(`[Redis] Subscribe Error: ${err.message}`); 
@@ -148,7 +147,10 @@ const app = express();
 app.set('trust proxy', 1);
 
 const bannedIPs = new Map();
-app.use(express.json()); 
+
+// 🔧 แก้ไขขีดจำกัดขนาดของ express.json เพื่อป้องกัน API Error เมื่อส่งข้อมูลขนาดใหญ่
+app.use(express.json({ limit: '1mb' })); 
+
 app.use((req, res, next) => {
     const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
     if (bannedIPs.has(ip)) {
@@ -172,9 +174,9 @@ app.use(compression({
     threshold: 512, filter: (req, res) => req.headers['content-type'] === 'application/octet-stream' ? false : compression.filter(req, res)
 }));
 
-// ระบบป้องกัน Timeout เร็วเกินไป
 app.use((req, res, next) => {
-    if (req.url.includes('//')) req.url = req.url.replace(/\/{2,}/g, '/'); 
+    // 🔧 ปรับปรุง Regex เพื่อไม่ให้ไปกระทบกับพารามิเตอร์แบบ http://
+    if (req.url.includes('//')) req.url = req.url.replace(/^\/+/, '/').replace(/([^:])\/{2,}/g, '$1/'); 
     res.setTimeout(600000, () => {
         if (!res.headersSent) res.status(408).end();
     }); 
@@ -235,7 +237,6 @@ const formatUuid = (uuid) => {
     return clean.length === 32 ? `${clean.slice(0, 8)}-${clean.slice(8, 12)}-${clean.slice(12, 16)}-${clean.slice(16, 20)}-${clean.slice(20)}` : uuid;
 };
 
-// ใช้สำหรับกรณีสวมใส่/ถอดโมเดลปกติ
 const broadcastToLocalWatchers = (uuid, buffer, excludeWs = null) => {
     const watchers = wsMap.get(uuid);
     if (!watchers) return;
@@ -256,10 +257,18 @@ const broadcastGlobal = (uuid, buffer, excludeWs = null) => {
     if (redisPub) redisPub.publish('avatar-broadcast', JSON.stringify({ uuid: uuid, bufferHex: buffer.toString('hex') })).catch(()=>{});
 };
 
+// 🔧 แยกการบันทึกฐานข้อมูลออกมาเป็นทุก 1 นาที เพื่อป้องกัน Data Loss กรณีเซิร์ฟเวอร์ดับ
+setInterval(saveStatsDB, 60 * 1000);
+
 const gcInterval = setInterval(async () => { 
     const now = Date.now();
     saveStatsDB(); 
     spamTracker.clear();
+
+    // 🔧 เคลียร์ IP ที่หมดเวลาแบนออกจาก Memory เพื่อคืนพื้นที่ RAM
+    for (const [ip, unbanTime] of bannedIPs.entries()) {
+        if (now > unbanTime) bannedIPs.delete(ip);
+    }
 
     for (const [tokenStr, userInfo] of tokens.entries()) {
         const isExpired = now - userInfo.createdAt > TOKEN_MAX_AGE_MS;
@@ -350,7 +359,8 @@ const runSync = async () => {
             }
         }
         
-        if (onlineData.length > 0 && !isMaintenanceMode) {
+        // 🛡️ [แก้บั๊กใหม่] นำเงื่อนไข onlineData.length > 0 ออก เพื่อบังคับส่ง Heartbeat ไปตลอดเวลาให้หน้าเว็บรู้ว่าโหนดออนไลน์อยู่
+        if (!isMaintenanceMode) {
             const hbData = new URLSearchParams({ key: API_KEY, action: 'heartbeat', data: JSON.stringify(onlineData) });
             fastAxios.post(API_URL, hbData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }}).catch(()=>{});
         }
@@ -660,6 +670,9 @@ wss.on('connection', (ws) => {
             
             // 0️⃣ AUTHENTICATION
             if (type === 0) {
+                // 🛡️ ป้องกัน Auth ซ้ำซ้อน (แก้บั๊กข้อความ Cloud connected เด้งเบิ้ล)
+                if (ws.isAuthenticated) return; 
+
                 const tokenStr = data.slice(1).toString('utf-8');
                 if (tokenStr.length > 100) return ws.terminate(); 
 
@@ -669,6 +682,11 @@ wss.on('connection', (ws) => {
                     clearTimeout(authTimeout); 
                     ws.isAuthenticated = true;
                     ws.userInfo = userInfo; 
+                    
+                    // 🧹 เคลียร์การเชื่อมต่อเก่าที่อาจค้างอยู่
+                    userInfo.activeSockets.forEach(oldWs => { if (oldWs !== ws) { try { oldWs.terminate(); } catch (e) {} } });
+                    userInfo.activeSockets.clear();
+
                     userInfo.activeSockets.add(ws); 
                     
                     if (ws.readyState === WebSocket.OPEN) {
@@ -685,6 +703,11 @@ wss.on('connection', (ws) => {
                 
                 const userInfo = ws.userInfo;
                 userInfo.lastAccess = Date.now(); 
+
+                // 🛡️ ป้องกันสแปม Action Wheel (หน่วง 100ms) ลดโหลดเซิร์ฟเวอร์
+                const nowAW = Date.now();
+                if (userInfo.lastActionWheelAt && nowAW - userInfo.lastActionWheelAt < 100) return;
+                userInfo.lastActionWheelAt = nowAW;
                 
                 const payloadSize = data.length > 6 ? data.length - 6 : 0;
                 const newbuffer = Buffer.allocUnsafe(22 + payloadSize);
@@ -695,7 +718,7 @@ wss.on('connection', (ws) => {
                 try {
                     newbuffer.writeInt32BE(data.readInt32BE(1), 17); 
                     
-                    // 🔥 บังคับให้เป็น Global
+                    // บังคับ flag เป็น Global
                     const isGlobal = 1; 
                     newbuffer.writeUInt8(isGlobal, 21); 
                     
@@ -703,18 +726,8 @@ wss.on('connection', (ws) => {
                         data.slice(6).copy(newbuffer, 22);
                     }
                     
-                    // 🚀 วิธีที่ 2: ยิง Broadcast ตรงๆ ไม่ผ่านระบบ Watcher (Brute-force)
-                    // ทะลวงข้อจำกัดของ Figura เวอร์ชันใหม่ ทุกคนเห็น 100%
-                    wss.clients.forEach(client => {
-                        if (client !== ws && client.readyState === WebSocket.OPEN && client.isAuthenticated) {
-                            try { client.send(newbuffer, { binary: true }); } catch(e) {}
-                        }
-                    });
-
-                    // ส่งข้อมูลข้าม Node ผ่าน Redis (ถ้ามี)
-                    if (redisPub) {
-                        redisPub.publish('avatar-force-all', newbuffer.toString('hex')).catch(()=>{});
-                    }
+                    // 🚀 เปลี่ยนมาส่งผ่านระบบ watcher แทนการส่งแบบ Brute-force ให้ทุกคน
+                    broadcastGlobal(userInfo.uuid, newbuffer, ws);
 
                 } catch (bufferErr) {
                     logger.error(`[WebSocket] Action Wheel Broadcast Error: ${bufferErr.message}`);
