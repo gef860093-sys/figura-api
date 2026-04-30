@@ -640,7 +640,6 @@ wss.on('connection', (ws) => {
             if (ws.msgCount > KICK_LIMIT_WS_MSGS) return ws.terminate(); 
             if (ws.msgCount > RATE_LIMIT_WS_MSGS) return; 
 
-            // ตรวจสอบความถูกต้องของ Buffer
             if (!Buffer.isBuffer(data) || data.length < 1 || data.length > 1048576) return; 
 
             const type = data[0];
@@ -668,13 +667,11 @@ wss.on('connection', (ws) => {
             
             // 1️⃣ PING / ACTION WHEEL / BROADCAST
             else if (type === 1) { 
-                // 🌟 แก้ไขให้รับแพ็กเกจ Action Wheel ที่สั้นกว่า 10 bytes ได้
                 if (!ws.isAuthenticated || data.length < 6 || !ws.userInfo) return; 
                 
                 const userInfo = ws.userInfo;
                 userInfo.lastAccess = Date.now(); 
                 
-                // คำนวณขนาดแพ็กเกจสำหรับส่งต่อ
                 const payloadSize = data.length > 6 ? data.length - 6 : 0;
                 const newbuffer = Buffer.allocUnsafe(22 + payloadSize);
                 
@@ -682,22 +679,19 @@ wss.on('connection', (ws) => {
                 userInfo.hexUuidBuffer.copy(newbuffer, 1); 
                 
                 try {
-                    // อ่านค่าเวลา (Ping)
                     newbuffer.writeInt32BE(data.readInt32BE(1), 17); 
                     
-                    // อ่านค่าความไกลของการมองเห็น
-                    const isGlobal = data.readUInt8(5) !== 0 ? 1 : 0;
+                    // 🔥 บังคับให้ Action Wheel เป็น Global (เห็นทุกคน 100%)
+                    const isGlobal = 1; 
                     newbuffer.writeUInt8(isGlobal, 21); 
                     
-                    // แทรกข้อมูล Action Wheel (ถ้ามี)
                     if (payloadSize > 0) {
                         data.slice(6).copy(newbuffer, 22);
                     }
                     
-                    // กระจายให้ผู้เล่นรอบๆ
-                    broadcastGlobal(userInfo.uuid, newbuffer, isGlobal === 1 ? null : ws);
+                    // กระจายให้ทุกคนในเซิร์ฟเวอร์เห็น (null)
+                    broadcastGlobal(userInfo.uuid, newbuffer, null);
                 } catch (bufferErr) {
-                    // หากแพ็กเกจมีปัญหา ให้ปล่อยผ่าน ไม่ต้องตัดการเชื่อมต่อ
                     logger.error(`[WebSocket] Action Wheel Broadcast Error: ${bufferErr.message}`);
                 }
             }
@@ -717,9 +711,7 @@ wss.on('connection', (ws) => {
                     if (wsMap.has(uuid)) wsMap.get(uuid).delete(ws); 
                 }
             }
-        } catch (e) {
-            // ไม่ต้องทำอะไร ป้องกันเซิร์ฟแครชจากข้อผิดพลาดของข้อมูลผู้เล่น
-        } 
+        } catch (e) {} 
     });
     
     ws.on('error', () => {}); 
