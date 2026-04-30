@@ -7,8 +7,6 @@ const axios = require('axios');
 const path = require('path');
 const fs = require('fs');
 const fsp = require('fs/promises');
-const { pipeline } = require('stream/promises');
-const { Transform } = require('stream'); 
 const cors = require('cors');
 const crypto = require('crypto');
 const rateLimit = require('express-rate-limit'); 
@@ -49,7 +47,7 @@ process.on('unhandledRejection', (reason) => { logger.error(`${c.r}[Promise Prot
 // ==========================================
 const PORT = process.env.PORT || 80; 
 
-let LIMIT_BYTES = 50 * 1024 * 1024; 
+let LIMIT_BYTES = 35 * 1024 * 1024; // 35MB
 const ENABLE_WHITELIST = true; 
 
 const TOKEN_MAX_AGE_MS = 12 * 60 * 60 * 1000; 
@@ -100,10 +98,25 @@ const WS_PING_INTERVAL_MS = 25000;
 const redisPub = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL) : null;
 const redisSub = process.env.REDIS_URL ? new Redis(process.env.REDIS_URL) : null;
 
-if (redisSub) {
-    redisSub.subscribe('avatar-broadcast', 'avatar-force-all', (err) => { 
-        if (err) logger.error(`[Redis] Subscribe Error: ${err.message}`); 
+const wsMap = new Map(); 
+
+const broadcastToLocalWatchers = (uuid, buffer, excludeWs = null) => {
+    const watchers = wsMap.get(uuid);
+    if (!watchers) return;
+    watchers.forEach(tws => {
+        if (tws === excludeWs) return; 
+        try {
+            if (tws.readyState === WebSocket.OPEN && tws.bufferedAmount < 1048576) {
+                tws.send(buffer, { binary: true });
+            } else if (tws.readyState !== WebSocket.OPEN) {
+                watchers.delete(tws); 
+            }
+        } catch (e) { watchers.delete(tws); }
     });
+};
+
+if (redisSub) {
+    redisSub.subscribe('avatar-broadcast', 'avatar-force-all').catch(()=>{});
     redisSub.on('message', (channel, message) => {
         if (channel === 'avatar-broadcast') {
             const data = JSON.parse(message);
@@ -119,6 +132,11 @@ if (redisSub) {
         }
     });
 }
+
+const broadcastGlobal = (uuid, buffer, excludeWs = null) => {
+    broadcastToLocalWatchers(uuid, buffer, excludeWs);
+    if (redisPub) redisPub.publish('avatar-broadcast', JSON.stringify({ uuid: uuid, bufferHex: buffer.toString('hex') })).catch(()=>{});
+};
 
 const avatarsDir = path.join(__dirname, "avatars");
 const backupDir = path.join(__dirname, "avatars_backup");
@@ -148,19 +166,6 @@ app.set('trust proxy', 1);
 
 const bannedIPs = new Map();
 
-// 🔧 แก้ไขขีดจำกัดขนาดของ express.json เพื่อป้องกัน API Error เมื่อส่งข้อมูลขนาดใหญ่
-app.use(express.json({ limit: '1mb' })); 
-
-app.use((req, res, next) => {
-    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-    if (bannedIPs.has(ip)) {
-        if (Date.now() < bannedIPs.get(ip)) return res.status(403).send("§cIP ของคุณถูกแบนชั่วคราวจากการสแปม");
-        bannedIPs.delete(ip); 
-    }
-    req.clientIp = ip;
-    next();
-});
-
 app.use(cors({
     origin: '*', 
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
@@ -174,22 +179,36 @@ app.use(compression({
     threshold: 512, filter: (req, res) => req.headers['content-type'] === 'application/octet-stream' ? false : compression.filter(req, res)
 }));
 
+// 🛡️ FIX 1: URL Sanitization (ดักสแลชเบิ้ลป้องกันจอแดง)
 app.use((req, res, next) => {
-    // 🔧 ปรับปรุง Regex เพื่อไม่ให้ไปกระทบกับพารามิเตอร์แบบ http://
-    if (req.url.includes('//')) req.url = req.url.replace(/^\/+/, '/').replace(/([^:])\/{2,}/g, '$1/'); 
-    res.setTimeout(600000, () => {
-        if (!res.headersSent) res.status(408).end();
-    }); 
+    const urlParts = req.url.split('?');
+    urlParts[0] = urlParts[0].replace(/\/{2,}/g, '/');
+    req.url = urlParts.join('?');
+    res.setTimeout(120000, () => { if (!res.headersSent) res.status(408).end(); }); 
     next(); 
+});
+
+app.use((req, res, next) => {
+    const ip = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    if (bannedIPs.has(ip)) {
+        if (Date.now() < bannedIPs.get(ip)) return res.status(403).send("§cIP ของคุณถูกแบนชั่วคราวจากการสแปม");
+        bannedIPs.delete(ip); 
+    }
+    req.clientIp = ip;
+    next();
 });
 
 const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 300, message: { error: "Rate Limit Exceeded" } });
 const uploadLimiter = rateLimit({ windowMs: 60 * 1000, max: 40, message: { error: "Uploads Limited" } }); 
 
-app.use('/api/', (req, res, next) => { 
-    if (req.path === '/avatar' && (req.method === 'PUT' || req.method === 'POST')) return uploadLimiter(req, res, next); 
-    next(); 
-}, apiLimiter);
+// 🛡️ FIX 2: Raw Body Parser (แก้โมเดลโหลดค้าง / อัปโหลดพัง)
+app.use('/api/avatar', uploadLimiter, express.raw({ type: '*/*', limit: '35mb' }));
+app.use(express.json({ limit: '5mb' })); 
+
+app.use('/api/', apiLimiter);
+
+// 🛡️ FIX 3: Route สำหรับ Java Mod Watchdog
+app.get('/ping', (req, res) => res.status(200).send("PONG"));
 
 class LRUCache {
     constructor(limit) { this.map = new Map(); this.limit = limit; }
@@ -210,11 +229,9 @@ class LRUCache {
 
 const server_ids = new LRUCache(1000);
 const tokens = new Map(); 
-const wsMap = new Map(); 
 let hashCache = new LRUCache(3000); 
 let apiJsonCache = new LRUCache(3000); 
 const userActivity = new Map(); 
-const spamTracker = new Map();
 const uploadCooldowns = new Map();
 
 let sqlBlacklist = new Set();
@@ -237,141 +254,8 @@ const formatUuid = (uuid) => {
     return clean.length === 32 ? `${clean.slice(0, 8)}-${clean.slice(8, 12)}-${clean.slice(12, 16)}-${clean.slice(16, 20)}-${clean.slice(20)}` : uuid;
 };
 
-const broadcastToLocalWatchers = (uuid, buffer, excludeWs = null) => {
-    const watchers = wsMap.get(uuid);
-    if (!watchers) return;
-    watchers.forEach(tws => {
-        if (tws === excludeWs) return; 
-        try {
-            if (tws.readyState === WebSocket.OPEN && tws.bufferedAmount < 1048576) {
-                tws.send(buffer, { binary: true });
-            } else if (tws.readyState !== WebSocket.OPEN) {
-                watchers.delete(tws); 
-            }
-        } catch (e) { watchers.delete(tws); }
-    });
-};
-
-const broadcastGlobal = (uuid, buffer, excludeWs = null) => {
-    broadcastToLocalWatchers(uuid, buffer, excludeWs);
-    if (redisPub) redisPub.publish('avatar-broadcast', JSON.stringify({ uuid: uuid, bufferHex: buffer.toString('hex') })).catch(()=>{});
-};
-
-// 🔧 แยกการบันทึกฐานข้อมูลออกมาเป็นทุก 1 นาที เพื่อป้องกัน Data Loss กรณีเซิร์ฟเวอร์ดับ
-setInterval(saveStatsDB, 60 * 1000);
-
-const gcInterval = setInterval(async () => { 
-    const now = Date.now();
-    saveStatsDB(); 
-    spamTracker.clear();
-
-    // 🔧 เคลียร์ IP ที่หมดเวลาแบนออกจาก Memory เพื่อคืนพื้นที่ RAM
-    for (const [ip, unbanTime] of bannedIPs.entries()) {
-        if (now > unbanTime) bannedIPs.delete(ip);
-    }
-
-    for (const [tokenStr, userInfo] of tokens.entries()) {
-        const isExpired = now - userInfo.createdAt > TOKEN_MAX_AGE_MS;
-        const isInactive = userInfo.activeSockets.size === 0 && now - userInfo.lastAccess > 60 * 60 * 1000; 
-        
-        if (isExpired || isInactive) { 
-            userInfo.activeSockets.forEach(ws => { try { ws.terminate(); } catch(e){} }); 
-            tokens.delete(tokenStr); 
-            userActivity.delete(userInfo.username);
-            uploadCooldowns.delete(userInfo.username);
-        }
-    }
-
-    try {
-        const files = await fsp.readdir(avatarsDir);
-        for (const file of files) {
-            if (file.endsWith('.tmp')) {
-                const stats = await fsp.stat(path.join(avatarsDir, file)).catch(()=>null);
-                if (stats && (now - stats.mtimeMs > 5 * 60 * 1000)) await fsp.unlink(path.join(avatarsDir, file)).catch(()=>{});
-            }
-        }
-    } catch (e) {}
-}, 5 * 60 * 1000); 
-
-setInterval(async () => {
-    try {
-        const now = Date.now();
-        const files = await fsp.readdir(avatarsDir);
-        for (const file of files) {
-            if (file.endsWith('.moon')) await fsp.copyFile(path.join(avatarsDir, file), path.join(backupDir, file)).catch(()=>{});
-        }
-        
-        const backups = await fsp.readdir(backupDir);
-        for (const file of backups) {
-            const filePath = path.join(backupDir, file);
-            const stats = await fsp.stat(filePath).catch(()=>null);
-            if (stats && (now - stats.mtimeMs > 24 * 60 * 60 * 1000)) await fsp.unlink(filePath).catch(()=>{});
-        }
-    } catch (e) {}
-}, 60 * 60 * 1000);
-
-const runSync = async () => {
-    if (isSyncing) return; 
-    isSyncing = true;
-    try {
-        if (!API_URL || !API_KEY) return; 
-        const formData = new URLSearchParams({ key: API_KEY, action: 'get_lists' });
-        const res = await fastAxios.post(API_URL, formData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }});
-
-        if (res.data && res.data.maintenance === true) {
-            isMaintenanceMode = true;
-        } else if (res.data && res.data.maintenance === false) {
-            isMaintenanceMode = false;
-            if (Array.isArray(res.data.blacklist)) sqlBlacklist = new Set(res.data.blacklist);
-            if (ENABLE_WHITELIST && Array.isArray(res.data.whitelist)) sqlWhitelist = new Set(res.data.whitelist);
-            
-            if (res.data.settings) {
-                const newLimitMB = parseInt(res.data.settings.max_upload_mb);
-                if (!isNaN(newLimitMB) && newLimitMB > 0) LIMIT_BYTES = newLimitMB * 1024 * 1024;
-                
-                const newCooldownSec = parseInt(res.data.settings.cooldown_sec);
-                if (!isNaN(newCooldownSec) && newCooldownSec > 0) UPLOAD_COOLDOWN_MS = newCooldownSec * 1000;
-
-                MOTD_TITLE = res.data.settings.motd_title || "FAYDAR";
-                MOTD_SUBTITLE = res.data.settings.motd_subtitle || "Welcome FayDarCloud";
-                MOTD_MESSAGE = generateMotd(); 
-            }
-        }
-
-        if (isMaintenanceMode !== lastMaintenanceState) {
-            lastMaintenanceState = isMaintenanceMode;
-            if (isMaintenanceMode) sendToDiscord(`⚠️ **[ประกาศ]** เซิร์ฟเวอร์เข้าสู่ **โหมดปิดปรับปรุง (Maintenance)** 🛠️`);
-            else sendToDiscord(`✅ **[ประกาศ]** เซิร์ฟเวอร์ **เปิดให้บริการปกติ** แล้ว! 🌍 โซน: ${currentZone.name}`);
-        }
-
-        const onlineData = [];
-        for (const [tokenStr, userInfo] of tokens.entries()) {
-            const uname = userInfo.usernameLower; 
-            
-            if (isMaintenanceMode || sqlBlacklist.has(uname) || (ENABLE_WHITELIST && !sqlWhitelist.has(uname))) {
-                userInfo.activeSockets.forEach(ws => { try { ws.terminate(); } catch(e){} });
-                tokens.delete(tokenStr);
-                userActivity.delete(userInfo.username);
-                continue;
-            }
-            if (userInfo.activeSockets && userInfo.activeSockets.size > 0) {
-                onlineData.push({ name: userInfo.username, activity: userActivity.get(userInfo.username) || "Idle", last_size: userInfo.lastSize || 0 });
-            }
-        }
-        
-        // 🛡️ [แก้บั๊กใหม่] นำเงื่อนไข onlineData.length > 0 ออก เพื่อบังคับส่ง Heartbeat ไปตลอดเวลาให้หน้าเว็บรู้ว่าโหนดออนไลน์อยู่
-        if (!isMaintenanceMode) {
-            const hbData = new URLSearchParams({ key: API_KEY, action: 'heartbeat', data: JSON.stringify(onlineData) });
-            fastAxios.post(API_URL, hbData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }}).catch(()=>{});
-        }
-    } catch (e) {} finally { isSyncing = false; }
-};
-
-setTimeout(runSync, 1000); 
-const syncInterval = setInterval(runSync, SYNC_INTERVAL_MS); 
-
 // ==========================================
-// 🚨 KICK API (ระบบบังคับเตะและยึดของกลาง 100%)
+// 🛡️ RE-ADDED: KICK API
 // ==========================================
 app.post('/api/admin/kick-avatar', async (req, res) => {
     if (req.headers['x-admin-key'] !== ADMIN_SECRET) return res.status(403).json({ success: false, message: "รหัส Admin Secret ไม่ตรงกัน กรุณาตั้งค่าให้ตรงกับใน Node.js" });
@@ -409,14 +293,14 @@ app.post('/api/admin/kick-avatar', async (req, res) => {
             const hexStr = formattedUuid.replace(/-/g, '');
             if (hexStr.length === 32) {
                 const hexUuidBuffer = Buffer.from(hexStr, 'hex');
-                const buffer = Buffer.allocUnsafe(17);
+                const buffer = Buffer.alloc(17);
                 buffer.writeUInt8(2, 0); 
                 hexUuidBuffer.copy(buffer, 1);
                 broadcastGlobal(formattedUuid, buffer);
             }
         } catch(e) {}
         
-        sendToDiscord(`🚨 **[Admin Action]** ผู้ดูแลระบบสั่ง **ยึดโมเดล** ของ \`${targetUsername}\` สำเร็จ (ผู้เล่นยังคงเชื่อมต่ออยู่)`);
+        sendToDiscord(`🚨 **[Admin Action]** ผู้ดูแลระบบสั่ง **ยึดโมเดล** ของ \`${targetUsername}\` สำเร็จ`);
     }
 
     res.json({ success: true, message: "Confiscated successfully" });
@@ -489,13 +373,14 @@ app.post('/api/equip', authMiddleware, (req, res) => {
     req.userInfo.lastAccess = Date.now();
     userActivity.set(req.userInfo.username, "👕 สวมใส่โมเดล...");
     
-    const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); 
+    const buffer = Buffer.alloc(17); buffer.writeUInt8(2, 0); 
     req.userInfo.hexUuidBuffer.copy(buffer, 1); 
     
     broadcastGlobal(req.userInfo.uuid, buffer); 
     res.status(200).json({ success: true });
 });
 
+// 🛡️ อัปโหลดใหม่ บังคับใช้ req.body แบบ Raw Buffer รวดเดียวจบ
 const handleAvatarUpload = async (req, res) => {
     const userInfo = req.userInfo;
     
@@ -505,57 +390,35 @@ const handleAvatarUpload = async (req, res) => {
     userInfo.lastAccess = Date.now(); 
     userActivity.set(userInfo.username, "📤 กำลังอัปโหลด...");
 
-    const tempFile = path.join(avatarsDir, `${userInfo.uuid}_${Date.now()}.tmp`);
-    const finalFile = path.join(avatarsDir, `${userInfo.uuid}.moon`);
-    const writeStream = fs.createWriteStream(tempFile);
-    const hash = crypto.createHash('sha256');
-    let uploadedBytes = 0;
+    if (!Buffer.isBuffer(req.body) || req.body.length === 0) {
+        return res.status(400).json({ error: "Empty file" });
+    }
 
-    const processStream = new Transform({
-        transform(chunk, encoding, callback) {
-            uploadedBytes += chunk.length;
-            if (uploadedBytes > LIMIT_BYTES) return callback(new Error('LIMIT_EXCEEDED'));
-            hash.update(chunk);
-            callback(null, chunk);
-        }
-    });
+    if (req.body.length > LIMIT_BYTES) {
+        bannedIPs.set(req.clientIp, Date.now() + 15 * 60 * 1000); 
+        return res.status(413).json({ error: "Payload Too Large" });
+    }
+
+    const finalFile = path.join(avatarsDir, `${userInfo.uuid}.moon`);
 
     try {
-        await pipeline(req, processStream, writeStream);
-
-        if (uploadedBytes === 0) {
-            await fsp.unlink(tempFile).catch(()=>{});
-            return res.status(400).json({ error: "Empty file" });
-        }
-
-        const finalHash = hash.digest('hex');
-        await fsp.rename(tempFile, finalFile); 
+        await fsp.writeFile(finalFile, req.body);
+        const finalHash = crypto.createHash('sha256').update(req.body).digest('hex');
         
-        userInfo.lastSize = uploadedBytes;
+        userInfo.lastSize = req.body.length;
         hashCache.set(userInfo.uuid, finalHash); 
         apiJsonCache.delete(userInfo.uuid); 
         uploadCooldowns.set(userInfo.username, Date.now() + UPLOAD_COOLDOWN_MS);
 
-        serverStats.totalUploads++; serverStats.totalBytes += uploadedBytes; saveStatsDB();
+        serverStats.totalUploads++; serverStats.totalBytes += req.body.length; saveStatsDB();
         userActivity.set(userInfo.username, "✅ พร้อมใช้งาน");
         
-        const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); 
+        const buffer = Buffer.alloc(17); buffer.writeUInt8(2, 0); 
         userInfo.hexUuidBuffer.copy(buffer, 1); 
         broadcastGlobal(userInfo.uuid, buffer); 
         
         res.status(200).json({ success: true, hash: finalHash }); 
     } catch (err) {
-        await fsp.unlink(tempFile).catch(()=>{});
-        
-        if (err.message === 'LIMIT_EXCEEDED') {
-            let strikes = (spamTracker.get(userInfo.username) || 0) + 1;
-            spamTracker.set(userInfo.username, strikes);
-            if (strikes >= 3) {
-                bannedIPs.set(req.clientIp, Date.now() + 15 * 60 * 1000); 
-                sendToDiscord(`🚨 **[Auto-Ban]** ผู้เล่น \`${userInfo.username}\` ถูกแบน IP 15 นาที ฐานสแปมไฟล์ใหญ่`);
-            }
-            return res.status(413).json({ error: "Payload Too Large" });
-        }
         logger.error(`${c.r}[Upload Error] ${err.message}${c.rst}`);
         if (!res.headersSent) res.status(500).json({ error: "Upload failed" });
     }
@@ -573,7 +436,7 @@ app.delete('/api/avatar', authMiddleware, async (req, res) => {
         
         hashCache.delete(userInfo.uuid); apiJsonCache.delete(userInfo.uuid); 
         
-        const buffer = Buffer.allocUnsafe(17); buffer.writeUInt8(2, 0); 
+        const buffer = Buffer.alloc(17); buffer.writeUInt8(2, 0); 
         userInfo.hexUuidBuffer.copy(buffer, 1); 
         broadcastGlobal(userInfo.uuid, buffer); 
         
@@ -581,6 +444,7 @@ app.delete('/api/avatar', authMiddleware, async (req, res) => {
     } catch (err) { res.status(404).end(); }
 });
 
+// 🛡️ FIX 4: บังคับโหลดแคชสกินใหม่เสมอ ป้องกันโมเดลไม่อัปเดต
 app.get('/api/:uuid/avatar', async (req, res) => { 
     const uuidStr = req.params.uuid;
     if (["motd", "version", "auth", "limits", "stats-secret"].includes(uuidStr) || !isValidUUID(uuidStr)) return res.status(404).end();
@@ -588,7 +452,7 @@ app.get('/api/:uuid/avatar', async (req, res) => {
     const avatarFile = path.join(avatarsDir, `${formatUuid(uuidStr)}.moon`);
     try {
         await fsp.access(avatarFile); 
-        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'); 
         res.setHeader('Content-Type', 'application/octet-stream');
         res.sendFile(avatarFile);
     } catch (e) { res.status(404).end(); }
@@ -625,7 +489,7 @@ app.use((err, req, res, next) => {
 });
 
 // ==========================================
-// ⚡ WEBSOCKET (ULTRA ANTI-DROP & ACTION WHEEL EDITION)
+// ⚡ WEBSOCKET (AGNOSTIC RELAY EDITION)
 // ==========================================
 const server = http.createServer(app);
 server.timeout = 600000; 
@@ -637,8 +501,7 @@ const wss = new WebSocket.Server({ server, perMessageDeflate: false, maxPayload:
 const FREE_RAM_MB = Math.floor(os.freemem() / 1024 / 1024);
 const MAX_WS = Math.max(500, Math.min(5000, Math.floor(FREE_RAM_MB / 1.5))); 
 
-const RATE_LIMIT_WS_MSGS = 300; 
-const KICK_LIMIT_WS_MSGS = 1000; 
+const RATE_LIMIT_WS_MSGS = 200; // ขยายเผื่อคนกด Action Wheel รัวๆ
 
 setInterval(() => { wss.clients.forEach(ws => { ws.msgCount = 0; }); }, 1000);
 
@@ -647,35 +510,28 @@ wss.on('connection', (ws) => {
 
     ws.isAlive = true; 
     ws.isAuthenticated = false; 
-    ws.missedPings = 0; 
     ws.msgCount = 0; 
     ws.watchedUuids = new Set(); 
     
     const authTimeout = setTimeout(() => {
         if (!ws.isAuthenticated) ws.terminate();
-    }, 30000);
+    }, 15000);
 
-    ws.on('pong', () => { ws.isAlive = true; ws.missedPings = 0; }); 
+    ws.on('pong', () => { ws.isAlive = true; }); 
 
     ws.on('message', (data) => {
         try {
             ws.msgCount++;
-            
-            if (ws.msgCount > KICK_LIMIT_WS_MSGS) return ws.terminate(); 
-            if (ws.msgCount > RATE_LIMIT_WS_MSGS) return; 
+            if (ws.msgCount > RATE_LIMIT_WS_MSGS) return; // แค่ข้ามข้อความไป ไม่เตะออก
 
             if (!Buffer.isBuffer(data) || data.length < 1 || data.length > 1048576) return; 
 
             const type = data[0];
             
-            // 0️⃣ AUTHENTICATION
             if (type === 0) {
-                // 🛡️ ป้องกัน Auth ซ้ำซ้อน (แก้บั๊กข้อความ Cloud connected เด้งเบิ้ล)
                 if (ws.isAuthenticated) return; 
 
                 const tokenStr = data.slice(1).toString('utf-8');
-                if (tokenStr.length > 100) return ws.terminate(); 
-
                 const userInfo = tokens.get(tokenStr);
 
                 if (userInfo) {
@@ -683,10 +539,8 @@ wss.on('connection', (ws) => {
                     ws.isAuthenticated = true;
                     ws.userInfo = userInfo; 
                     
-                    // 🧹 เคลียร์การเชื่อมต่อเก่าที่อาจค้างอยู่
                     userInfo.activeSockets.forEach(oldWs => { if (oldWs !== ws) { try { oldWs.terminate(); } catch (e) {} } });
                     userInfo.activeSockets.clear();
-
                     userInfo.activeSockets.add(ws); 
                     
                     if (ws.readyState === WebSocket.OPEN) {
@@ -697,44 +551,24 @@ wss.on('connection', (ws) => {
                 }
             }
             
-            // 1️⃣ PING / ACTION WHEEL / BROADCAST
+            // 🛡️ FIX ระบบ Action Wheel และ Animation
+            // Relay ทุกๆ ข้อมูลดิบที่ตัวเกมส่งมาให้ส่งต่อไปยังผู้เล่นทุกคนตรงๆ (ไม่เดาโครงสร้างไบต์)
             else if (type === 1) { 
-                if (!ws.isAuthenticated || data.length < 6 || !ws.userInfo) return; 
+                if (!ws.isAuthenticated || data.length < 1 || !ws.userInfo) return; 
                 
                 const userInfo = ws.userInfo;
                 userInfo.lastAccess = Date.now(); 
 
-                // 🛡️ ป้องกันสแปม Action Wheel (หน่วง 100ms) ลดโหลดเซิร์ฟเวอร์
-                const nowAW = Date.now();
-                if (userInfo.lastActionWheelAt && nowAW - userInfo.lastActionWheelAt < 100) return;
-                userInfo.lastActionWheelAt = nowAW;
+                const payload = data.slice(1); 
+                const newbuffer = Buffer.alloc(17 + payload.length);
                 
-                const payloadSize = data.length > 6 ? data.length - 6 : 0;
-                const newbuffer = Buffer.allocUnsafe(22 + payloadSize);
-                
-                newbuffer.writeUInt8(0, 0); 
+                newbuffer.writeUInt8(0, 0); // Event Broadcast S2C
                 userInfo.hexUuidBuffer.copy(newbuffer, 1); 
+                payload.copy(newbuffer, 17); // แปะ Payload ดิบ ไม่ทำการหั่นใดๆ ทั้งสิ้น
                 
-                try {
-                    newbuffer.writeInt32BE(data.readInt32BE(1), 17); 
-                    
-                    // บังคับ flag เป็น Global
-                    const isGlobal = 1; 
-                    newbuffer.writeUInt8(isGlobal, 21); 
-                    
-                    if (payloadSize > 0) {
-                        data.slice(6).copy(newbuffer, 22);
-                    }
-                    
-                    // 🚀 เปลี่ยนมาส่งผ่านระบบ watcher แทนการส่งแบบ Brute-force ให้ทุกคน
-                    broadcastGlobal(userInfo.uuid, newbuffer, ws);
-
-                } catch (bufferErr) {
-                    logger.error(`[WebSocket] Action Wheel Broadcast Error: ${bufferErr.message}`);
-                }
+                broadcastGlobal(userInfo.uuid, newbuffer, ws);
             }
             
-            // 2️⃣ WATCH & 3️⃣ UNWATCH UUID
             else if (type === 2 || type === 3) {
                 if (!ws.isAuthenticated || data.length < 17) return; 
                 const uuidHex = data.slice(1, 17).toString('hex');
@@ -774,15 +608,127 @@ wss.on('connection', (ws) => {
 const wsPingInterval = setInterval(() => { 
     wss.clients.forEach((ws) => { 
         if (!ws.isAlive) {
-            ws.missedPings++;
-            if (ws.missedPings >= 5) return ws.terminate();
-        } else { ws.missedPings = 0; }
+            return ws.terminate();
+        } 
         ws.isAlive = false; 
         if (ws.readyState === WebSocket.OPEN) { try { ws.ping(); } catch(e){} } 
     }); 
 }, WS_PING_INTERVAL_MS); 
 
 wss.on('close', () => clearInterval(wsPingInterval));
+
+// ==========================================
+// 🔄 GC & SYNC SYSTEM
+// ==========================================
+setInterval(saveStatsDB, 60 * 1000);
+
+const gcInterval = setInterval(async () => { 
+    const now = Date.now();
+    saveStatsDB(); 
+
+    for (const [ip, unbanTime] of bannedIPs.entries()) {
+        if (now > unbanTime) bannedIPs.delete(ip);
+    }
+
+    for (const [tokenStr, userInfo] of tokens.entries()) {
+        const isExpired = now - userInfo.createdAt > TOKEN_MAX_AGE_MS;
+        const isInactive = userInfo.activeSockets.size === 0 && now - userInfo.lastAccess > 60 * 60 * 1000; 
+        
+        if (isExpired || isInactive) { 
+            userInfo.activeSockets.forEach(ws => { try { ws.terminate(); } catch(e){} }); 
+            tokens.delete(tokenStr); 
+            userActivity.delete(userInfo.username);
+            uploadCooldowns.delete(userInfo.username);
+        }
+    }
+
+    try {
+        const files = await fsp.readdir(avatarsDir);
+        for (const file of files) {
+            if (file.endsWith('.tmp')) {
+                const stats = await fsp.stat(path.join(avatarsDir, file)).catch(()=>null);
+                if (stats && (now - stats.mtimeMs > 5 * 60 * 1000)) await fsp.unlink(path.join(avatarsDir, file)).catch(()=>{});
+            }
+        }
+    } catch (e) {}
+}, 5 * 60 * 1000); 
+
+setInterval(async () => {
+    try {
+        const now = Date.now();
+        const files = await fsp.readdir(avatarsDir);
+        for (const file of files) {
+            if (file.endsWith('.moon')) await fsp.copyFile(path.join(avatarsDir, file), path.join(backupDir, file)).catch(()=>{});
+        }
+        
+        const backups = await fsp.readdir(backupDir);
+        for (const file of backups) {
+            const filePath = path.join(backupDir, file);
+            const stats = await fsp.stat(filePath).catch(()=>null);
+            if (stats && (now - stats.mtimeMs > 24 * 60 * 60 * 1000)) await fsp.unlink(filePath).catch(()=>{});
+        }
+    } catch (e) {}
+}, 60 * 60 * 1000);
+
+// 🛡️ RE-ADDED: runSync Function (Heartbeat & Lists)
+const runSync = async () => {
+    if (isSyncing) return; 
+    isSyncing = true;
+    try {
+        if (!API_URL || !API_KEY) return; 
+        const formData = new URLSearchParams({ key: API_KEY, action: 'get_lists' });
+        const res = await fastAxios.post(API_URL, formData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }});
+
+        if (res.data && res.data.maintenance === true) {
+            isMaintenanceMode = true;
+        } else if (res.data && res.data.maintenance === false) {
+            isMaintenanceMode = false;
+            if (Array.isArray(res.data.blacklist)) sqlBlacklist = new Set(res.data.blacklist);
+            if (ENABLE_WHITELIST && Array.isArray(res.data.whitelist)) sqlWhitelist = new Set(res.data.whitelist);
+            
+            if (res.data.settings) {
+                const newLimitMB = parseInt(res.data.settings.max_upload_mb);
+                if (!isNaN(newLimitMB) && newLimitMB > 0) LIMIT_BYTES = newLimitMB * 1024 * 1024;
+                
+                const newCooldownSec = parseInt(res.data.settings.cooldown_sec);
+                if (!isNaN(newCooldownSec) && newCooldownSec > 0) UPLOAD_COOLDOWN_MS = newCooldownSec * 1000;
+
+                MOTD_TITLE = res.data.settings.motd_title || "FAYDAR";
+                MOTD_SUBTITLE = res.data.settings.motd_subtitle || "Welcome FayDarCloud";
+                MOTD_MESSAGE = generateMotd(); 
+            }
+        }
+
+        if (isMaintenanceMode !== lastMaintenanceState) {
+            lastMaintenanceState = isMaintenanceMode;
+            if (isMaintenanceMode) sendToDiscord(`⚠️ **[ประกาศ]** เซิร์ฟเวอร์เข้าสู่ **โหมดปิดปรับปรุง (Maintenance)** 🛠️`);
+            else sendToDiscord(`✅ **[ประกาศ]** เซิร์ฟเวอร์ **เปิดให้บริการปกติ** แล้ว! 🌍 โซน: ${currentZone.name}`);
+        }
+
+        const onlineData = [];
+        for (const [tokenStr, userInfo] of tokens.entries()) {
+            const uname = userInfo.usernameLower; 
+            
+            if (isMaintenanceMode || sqlBlacklist.has(uname) || (ENABLE_WHITELIST && !sqlWhitelist.has(uname))) {
+                userInfo.activeSockets.forEach(ws => { try { ws.terminate(); } catch(e){} });
+                tokens.delete(tokenStr);
+                userActivity.delete(userInfo.username);
+                continue;
+            }
+            if (userInfo.activeSockets && userInfo.activeSockets.size > 0) {
+                onlineData.push({ name: userInfo.username, activity: userActivity.get(userInfo.username) || "Idle", last_size: userInfo.lastSize || 0 });
+            }
+        }
+        
+        if (!isMaintenanceMode) {
+            const hbData = new URLSearchParams({ key: API_KEY, action: 'heartbeat', data: JSON.stringify(onlineData) });
+            fastAxios.post(API_URL, hbData.toString(), { headers: { 'Content-Type': 'application/x-www-form-urlencoded' }}).catch(()=>{});
+        }
+    } catch (e) {} finally { isSyncing = false; }
+};
+
+setTimeout(runSync, 1000); 
+const syncInterval = setInterval(runSync, SYNC_INTERVAL_MS); 
 
 const shutdown = () => {
     logger.info(`\n${c.y}⚠️ กำลังเซฟข้อมูลและปิดเซิร์ฟเวอร์อย่างปลอดภัย...${c.rst}`);
@@ -798,15 +744,15 @@ process.on('SIGTERM', shutdown); process.on('SIGINT', shutdown);
 
 server.listen(PORT, '0.0.0.0', () => {
     logger.info(`\n${c.p}==========================================${c.rst}`);
-    logger.info(`${c.b}✨ FAYDAR CLOUD ${c.rst}`);
+    logger.info(`${c.b}✨ FAYDAR CLOUD (ULTIMATE STABLE FIX) ${c.rst}`);
     logger.info(`${c.g}✅ DotEnv Loaded Securely${c.rst}`);
     logger.info(`${c.g}🌍 Server Region: ${currentZone.name} ${currentZone.mcFlag}${c.rst}`);
     logger.info(`${c.g}✅ API Synced: ${API_URL} (3s Interval)${c.rst}`);
     logger.info(`${redisPub ? c.g + '🔗 Redis Connected (Cluster Ready)' : c.y + '⚠️ No Redis (Running in Single Node Mode)'}${c.rst}`);
-    logger.info(`${c.y}🌊 Extended Stream Timeout: ACTIVE (10 mins)${c.rst}`);
-    logger.info(`${c.y}🛡️ Stability Patch (Anti-Kick RP Friendly): ACTIVE${c.rst}`);
-    logger.info(`${c.y}🎡 Action Wheel Engine (Global Bypass): ONLINE${c.rst}`);
-    logger.info(`${c.y}💾 SQLite WAL Database System: ACTIVE${c.rst}`);
+    logger.info(`${c.y}🛡️ Double Slash URL Fix: ACTIVE${c.rst}`);
+    logger.info(`${c.y}🛡️ Raw Payload Upload Fix: ACTIVE${c.rst}`);
+    logger.info(`${c.y}🛡️ Watchdog Endpoint (/ping): ACTIVE${c.rst}`);
+    logger.info(`${c.y}🎡 Agnostic Relay Engine (Fix Animation/Wheel): ACTIVE${c.rst}`);
     logger.info(`${c.p}==========================================${c.rst}\n`);
     
     sendToDiscord(`🚀 **[SYSTEM START]** ระบบ FayDar Figura Cloud พร้อมใช้งานแล้ว! 🌍 โซน: TH`);
