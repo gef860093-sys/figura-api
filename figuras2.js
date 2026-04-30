@@ -51,7 +51,9 @@ const PORT = process.env.PORT || 80;
 
 let LIMIT_BYTES = 50 * 1024 * 1024; 
 
+// 🔥 ปิดระบบล็อค Whitelist ให้ผู้เล่นทุกคนเข้าได้อัตโนมัติ!
 const ENABLE_WHITELIST = true; 
+
 const TOKEN_MAX_AGE_MS = 12 * 60 * 60 * 1000; 
 let UPLOAD_COOLDOWN_MS = 3 * 1000; 
 let MOTD_TITLE = "FAYDAR";
@@ -638,6 +640,7 @@ wss.on('connection', (ws) => {
             if (ws.msgCount > KICK_LIMIT_WS_MSGS) return ws.terminate(); 
             if (ws.msgCount > RATE_LIMIT_WS_MSGS) return; 
 
+            // ตรวจสอบความถูกต้องของ Buffer
             if (!Buffer.isBuffer(data) || data.length < 1 || data.length > 1048576) return; 
 
             const type = data[0];
@@ -665,32 +668,38 @@ wss.on('connection', (ws) => {
             
             // 1️⃣ PING / ACTION WHEEL / BROADCAST
             else if (type === 1) { 
-                // 🌟 แก้ไข: ลดเงื่อนไขขนาดข้อมูลจาก 10 ให้เหลือ 6 เพื่อรองรับข้อมูล Action Wheel (Ping) ที่มีขนาดเล็ก
+                // 🌟 แก้ไขให้รับแพ็กเกจ Action Wheel ที่สั้นกว่า 10 bytes ได้
                 if (!ws.isAuthenticated || data.length < 6 || !ws.userInfo) return; 
                 
                 const userInfo = ws.userInfo;
                 userInfo.lastAccess = Date.now(); 
                 
-                // สร้าง Buffer ใหม่ให้ยาวพอดีกับขนาดข้อมูลที่ส่งมา
-                const newbuffer = Buffer.allocUnsafe(22 + (data.length - 6));
+                // คำนวณขนาดแพ็กเกจสำหรับส่งต่อ
+                const payloadSize = data.length > 6 ? data.length - 6 : 0;
+                const newbuffer = Buffer.allocUnsafe(22 + payloadSize);
                 
-                // 0 คือรหัสคำสั่ง "Ping/Action Wheel" สำหรับผู้รับ
                 newbuffer.writeUInt8(0, 0); 
                 userInfo.hexUuidBuffer.copy(newbuffer, 1); 
                 
                 try {
+                    // อ่านค่าเวลา (Ping)
                     newbuffer.writeInt32BE(data.readInt32BE(1), 17); 
+                    
+                    // อ่านค่าความไกลของการมองเห็น
                     const isGlobal = data.readUInt8(5) !== 0 ? 1 : 0;
                     newbuffer.writeUInt8(isGlobal, 21); 
                     
-                    // ป้องกัน Error กรณีข้อมูลสั้นมากๆ (เช่น Action Wheel ที่ไม่มี Payload เพิ่มเติม)
-                    if (data.length > 6) {
+                    // แทรกข้อมูล Action Wheel (ถ้ามี)
+                    if (payloadSize > 0) {
                         data.slice(6).copy(newbuffer, 22);
                     }
                     
-                    // กระจายคำสั่ง Action Wheel ไปให้ทุกคนที่อยู่รอบๆ เห็น
+                    // กระจายให้ผู้เล่นรอบๆ
                     broadcastGlobal(userInfo.uuid, newbuffer, isGlobal === 1 ? null : ws);
-                } catch (bufferErr) {}
+                } catch (bufferErr) {
+                    // หากแพ็กเกจมีปัญหา ให้ปล่อยผ่าน ไม่ต้องตัดการเชื่อมต่อ
+                    logger.error(`[WebSocket] Action Wheel Broadcast Error: ${bufferErr.message}`);
+                }
             }
             
             // 2️⃣ WATCH & 3️⃣ UNWATCH UUID
@@ -708,7 +717,9 @@ wss.on('connection', (ws) => {
                     if (wsMap.has(uuid)) wsMap.get(uuid).delete(ws); 
                 }
             }
-        } catch (e) {} 
+        } catch (e) {
+            // ไม่ต้องทำอะไร ป้องกันเซิร์ฟแครชจากข้อผิดพลาดของข้อมูลผู้เล่น
+        } 
     });
     
     ws.on('error', () => {}); 
