@@ -21,6 +21,9 @@ const Database = require('better-sqlite3');
 
 EventEmitter.defaultMaxListeners = 15000;
 
+// 🛠️ FIX 1: เพิ่ม Instance ID เพื่อป้องกันปัญหา Redis ส่งข้อมูล Animation ตัวเองซ้อนทับ (Echo)
+const SERVER_INSTANCE_ID = crypto.randomBytes(8).toString('hex');
+
 // ==========================================
 // 🎨 ระบบสีและ Log สำหรับ Console
 // ==========================================
@@ -47,7 +50,7 @@ process.on('unhandledRejection', (reason) => { logger.error(`${c.r}[Promise Prot
 // ==========================================
 const PORT = process.env.PORT || 80;
 
-let LIMIT_BYTES = 120 * 1024 * 1024; // 35MB
+let LIMIT_BYTES = 120 * 1024 * 1024; // 120MB
 const ENABLE_WHITELIST = true;
 
 const TOKEN_MAX_AGE_MS = 12 * 60 * 60 * 1000;
@@ -92,7 +95,8 @@ const generateMotd = () => {
 
 let MOTD_MESSAGE = generateMotd();
 
-const SYNC_INTERVAL_MS = 3000;
+// 🛠️ FIX 4: เพิ่มระยะเวลา Sync เพื่อลดภาระเซิร์ฟเวอร์ แก้อาการเซิร์ฟเวอร์กระตุกและ Ping สูง
+const SYNC_INTERVAL_MS = 15000; // เปลี่ยนจาก 3000 เป็น 15000
 const WS_PING_INTERVAL_MS = 25000;
 
 // ==========================================
@@ -123,6 +127,8 @@ if (redisSub) {
     redisSub.on('message', (channel, message) => {
         if (channel === 'avatar-broadcast') {
             const data = JSON.parse(message);
+            // 🛠️ FIX 1 (ต่อ): ป้องกันการรับ Packet ตัวเองซ้ำ
+            if (data.sender === SERVER_INSTANCE_ID) return; 
             broadcastToLocalWatchers(data.uuid, Buffer.from(data.bufferHex, 'hex'));
         }
         else if (channel === 'avatar-force-all') {
@@ -138,7 +144,8 @@ if (redisSub) {
 
 const broadcastGlobal = (uuid, buffer, excludeWs = null) => {
     broadcastToLocalWatchers(uuid, buffer, excludeWs);
-    if (redisPub) redisPub.publish('avatar-broadcast', JSON.stringify({ uuid: uuid, bufferHex: buffer.toString('hex') })).catch(()=>{});
+    // 🛠️ FIX 1 (ต่อ): แนบ ID เซิร์ฟเวอร์ไปตอนส่ง
+    if (redisPub) redisPub.publish('avatar-broadcast', JSON.stringify({ uuid: uuid, bufferHex: buffer.toString('hex'), sender: SERVER_INSTANCE_ID })).catch(()=>{});
 };
 
 // ==========================================
@@ -245,8 +252,8 @@ app.use((req, res, next) => {
 const apiLimiter = rateLimit({ windowMs: 60 * 1000, max: 300, message: { error: "Rate Limit Exceeded" } });
 const uploadLimiter = rateLimit({ windowMs: 60 * 1000, max: 40, message: { error: "Uploads Limited" } });
 
-// 🛡️ Raw Body Parser (แก้โมเดลโหลดค้าง / อัปโหลดพัง 100%)
-app.use('/api/avatar', uploadLimiter, express.raw({ type: '*/*', limit: '35mb' }));
+// 🛠️ FIX 3: เพิ่มลิมิตของ express.raw ป้องกันโมเดลใหญ่อัปโหลดแล้วค้าง 0%/100% หรือเชื่อมต่อเด้ง
+app.use('/api/avatar', uploadLimiter, express.raw({ type: '*/*', limit: '150mb' }));
 app.use(express.json({ limit: '5mb' }));
 
 app.use('/api/', apiLimiter);
@@ -444,7 +451,8 @@ app.get('/api/:uuid/avatar', async (req, res) => {
     const avatarFile = path.join(avatarsDir, `${formatUuid(uuidStr)}.moon`);
     try {
         await fsp.access(avatarFile);
-        res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate'); // 🛡️ บังคับให้โหลดสกินใหม่เสมอ
+        // 🛠️ FIX 2: เปลี่ยน Cache-Control เพื่อให้ตัวเกมแคชไฟล์ไว้ ไม่ต้องโหลดใหม่ซ้ำๆ แก้อาการกระพริบและดีเลย์
+        res.setHeader('Cache-Control', 'public, max-age=31536000, immutable'); 
         res.setHeader('Content-Type', 'application/octet-stream');
         res.sendFile(avatarFile);
     } catch (e) { res.status(404).end(); }
@@ -544,7 +552,7 @@ wss.on('connection', (ws) => {
                 }
             }
             
-            // 🛡️ FIX ระบบ Action Wheel และ Animation: Relay แบบตรงๆ ไม่ดัดแปลงข้อมูล
+            // 🛡️ FIX 1 (ต่อ): ระบบ Action Wheel และ Animation
             else if (type === 1) {
                 if (!ws.isAuthenticated || data.length < 1 || !ws.userInfo) return;
                 
@@ -554,7 +562,8 @@ wss.on('connection', (ws) => {
                 const payload = data.slice(1);
                 const newbuffer = Buffer.alloc(17 + payload.length);
                 
-                newbuffer.writeUInt8(0, 0); // Event Broadcast S2C
+                // ⚠️ เปลี่ยนจาก 0 เป็น 1 (1 คือ Event Broadcast สำหรับแอนิเมชัน/Wheel)
+                newbuffer.writeUInt8(1, 0); 
                 userInfo.hexUuidBuffer.copy(newbuffer, 1);
                 payload.copy(newbuffer, 17); // แปะ Payload ดิบๆ เลย ไม่ต้องสนข้างใน
                 
@@ -738,10 +747,10 @@ server.listen(PORT, '0.0.0.0', () => {
     logger.info(`${c.b}✨ FAYDAR CLOUD (STABLE 1.0) ${c.rst}`);
     logger.info(`${c.g}✅ DotEnv Loaded Securely${c.rst}`);
     logger.info(`${c.g}🌍 Server Region: ${currentZone.name} ${currentZone.mcFlag}${c.rst}`);
-    logger.info(`${c.g}✅ API Synced: ${API_URL} (3s Interval)${c.rst}`);
+    logger.info(`${c.g}✅ API Synced: ${API_URL} (15s Interval)${c.rst}`);
     logger.info(`${redisPub ? c.g + '🔗 Redis Connected (Cluster Ready)' : c.y + '⚠️ No Redis (Running in Single Node Mode)'}${c.rst}`);
     logger.info(`${c.y}🛡️ Double Slash URL Fix: ACTIVE${c.rst}`);
-    logger.info(`${c.y}🛡️ Raw Payload Upload Fix: ACTIVE${c.rst}`);
+    logger.info(`${c.y}🛡️ Raw Payload Upload Fix: ACTIVE (150MB)${c.rst}`);
     logger.info(`${c.y}🛡️ Watchdog Endpoint (/ping): ACTIVE${c.rst}`);
     logger.info(`${c.y}🎡 Agnostic Relay Engine (Fix Animation/Wheel): ACTIVE${c.rst}`);
     logger.info(`${c.p}==========================================${c.rst}\n`);
