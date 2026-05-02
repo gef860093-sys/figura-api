@@ -47,7 +47,7 @@ process.on('unhandledRejection', (reason) => { logger.error(`${c.r}[Promise Prot
 // ==========================================
 const PORT = process.env.PORT || 80;
 
-let LIMIT_BYTES = 35 * 1024 * 1024; // 35MB
+let LIMIT_BYTES = 120 * 1024 * 1024; // 35MB
 const ENABLE_WHITELIST = true;
 
 const TOKEN_MAX_AGE_MS = 12 * 60 * 60 * 1000;
